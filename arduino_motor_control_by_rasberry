@@ -1,0 +1,24 @@
+import serial
+import time
+
+# Open serial connection
+arduino = serial.Serial('/dev/ttyACM0', 9600)  # Update this if needed
+time.sleep(10)  # Wait for Arduino to reset
+
+# Send commands
+arduino.write(b'f')  # Forward
+time.sleep(3)
+
+arduino.write(b's')  # Stop
+time.sleep(3)
+
+arduino.write(b'l')  # Turn left
+time.sleep(3)
+
+arduino.write(b'c')  # Center
+time.sleep(3)
+
+arduino.write(b'r')  # Turn right
+time.sleep(3)
+
+arduino.write(b'c')  # Center
