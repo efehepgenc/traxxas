@@ -1,0 +1,37 @@
+#include <Servo.h>
+
+Servo esc;
+Servo steering;
+
+void setup() {
+  Serial.begin(9600);
+
+  esc.attach(6);
+  steering.attach(9);
+
+  esc.writeMicroseconds(1500);   // Neutral
+  steering.write(90);            // Center steering
+  delay(5000);                   // ESC arming time
+}
+
+void loop() {
+  if (Serial.available()) {
+    char command = Serial.read();
+
+    if (command == 'f') {
+      esc.writeMicroseconds(1530); // Move forward
+    }
+    else if (command == 's') {
+      esc.writeMicroseconds(1500); // Stop
+    }
+    else if (command == 'l') {
+      steering.write(30); // Turn left
+    }
+    else if (command == 'r') {
+      steering.write(150); // Turn right
+    }
+    else if (command == 'c') {
+      steering.write(90); // Center
+    }
+  }
+}
