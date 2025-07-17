@@ -24,6 +24,9 @@ void loop() {
     else if (command == 's') {
       esc.writeMicroseconds(1500); // Stop
     }
+    else if (command == 're') {
+      esc.writeMicroseconds(1470); // reverse
+    }
     else if (command == 'l') {
       steering.write(30); // Turn left
     }
