@@ -6,35 +6,42 @@ Servo steering;
 void setup() {
   Serial.begin(9600);
 
-  esc.attach(6);
-  steering.attach(9);
+  esc.attach(6);        // ESC signal pin
+  steering.attach(9);   // Steering servo
 
-  esc.writeMicroseconds(1500);   // Neutral
-  steering.write(90);            // Center steering
-  delay(5000);                   // ESC arming time
+  esc.writeMicroseconds(1500); // Neutral
+  steering.write(90);          // Center steering
+  delay(5000);                 // ESC arming delay
 }
 
 void loop() {
   if (Serial.available()) {
-    char command = Serial.read();
+    if (Serial.peek() >= '0' && Serial.peek() <= '9') {
+      // If input starts with a digit, treat it as throttle value
+      int value = Serial.parseInt();  // Read full number
+      if (value >= 1500 && value <= 2000) {
+        esc.writeMicroseconds(value);
+      }
+    } else {
+      // Otherwise, handle character commands
+      char command = Serial.read();
 
-    if (command == 'f') {
-      esc.writeMicroseconds(1530); // Move forward
-    }
-    else if (command == 's') {
-      esc.writeMicroseconds(1500); // Stop
-    }
-    else if (command == 're') {
-      esc.writeMicroseconds(1470); // reverse
-    }
-    else if (command == 'l') {
-      steering.write(30); // Turn left
-    }
-    else if (command == 'r') {
-      steering.write(150); // Turn right
-    }
-    else if (command == 'c') {
-      steering.write(90); // Center
+      if (command == 'f') {
+        esc.writeMicroseconds(1525); // Low forward
+      }
+      else if (command == 's') {
+        esc.writeMicroseconds(1500); // Stop
+      }
+      else if (command == 'l') {
+        steering.write(30);          // Left
+      }
+      else if (command == 'r') {
+        steering.write(150);         // Right
+      }
+      else if (command == 'c') {
+        steering.write(90);          // Center
+      }
     }
   }
 }
+
