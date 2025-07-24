@@ -1,0 +1,66 @@
+import pygame
+import serial
+import time
+
+# Connect to Arduino
+try:
+    arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+    time.sleep(2)
+except serial.SerialException as e:
+    print(f" failed to connect arduino: {e}")
+    exit()
+
+# Init gamepad
+pygame.init()
+pygame.joystick.init()
+joystick = pygame.joystick.Joystick(0)
+joystick.init()
+print(f"controller: {joystick.get_name()}")
+
+def safe_write(cmd):
+    try:
+        arduino.write(cmd)
+    except serial.SerialException:
+        print(f"serial write failed: {cmd.decode()}")
+    except Exception as e:
+        print(f"unexpected error: {e}")
+
+while True:
+    pygame.event.pump()
+
+    # Get axis values
+    axis_fw_val = joystick.get_axis(2)  # RT (forward)
+    axis_re_val = joystick.get_axis(5)  # LT (reverse)
+
+    # Normalize and scale to throttle
+    normalized_fw = (axis_fw_val + 1) / 2      # from -1 to 1 → 0 to 1
+    normalized_re = max(0, (axis_re_val + 1) / 1.75)  # from -1 to 0.75 → 0 to 1
+
+    # Convert to microseconds
+    speed_fw_us = int(1500 + (normalized_fw * 500))
+    speed_re_us = int(1500 - (normalized_re * 500))
+
+    # Priority logic: use reverse if significantly pressed
+    if normalized_re > 0.05 and normalized_re > normalized_fw:
+        throttle_us = speed_re_us
+    elif normalized_fw > 0.05:
+        throttle_us = speed_fw_us
+    else:
+        throttle_us = 1500  # Neutral
+
+    try:
+        arduino.write(f"f{throttle_us}\n".encode())
+        print(f"Throttle: {throttle_us}")
+    except:
+        print("patladık")
+
+    # Steering with left analog X axis (axis 3)
+    axis_val = joystick.get_axis(3)
+    if axis_val > 0.3:
+        safe_write(b'r')
+    elif axis_val < -0.3:
+        safe_write(b'l')
+    else:
+        safe_write(b'c')
+
+    time.sleep(0.1)
