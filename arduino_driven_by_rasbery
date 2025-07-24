@@ -19,15 +19,23 @@ void loop() {
     if (Serial.peek() >= '0' && Serial.peek() <= '9') {
       // If input starts with a digit, treat it as throttle value
       int value = Serial.parseInt();  // Read full number
-      if (value >= 1500 && value <= 2000) {
+
+      // Allow full range: reverse (1000–1499), neutral (1500), forward (1501–2000)
+      if (value >= 1000 && value <= 2000) {
         esc.writeMicroseconds(value);
+        Serial.print("Throttle set to: ");
+        Serial.println(value);
       }
+
     } else {
       // Otherwise, handle character commands
       char command = Serial.read();
 
       if (command == 'f') {
-        esc.writeMicroseconds(1525); // Low forward
+        esc.writeMicroseconds(1525); // Forward
+      }
+      else if (command == 'b') {
+        esc.writeMicroseconds(1475); // Reverse
       }
       else if (command == 's') {
         esc.writeMicroseconds(1500); // Stop
@@ -44,4 +52,3 @@ void loop() {
     }
   }
 }
-
