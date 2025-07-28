@@ -1,0 +1,64 @@
+import pygame
+import serial
+import time
+
+# Connect to Arduino
+try:
+    arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+    time.sleep(2)
+except serial.SerialException as e:
+    print(f"Failed to connect to Arduino: {e}")
+    exit()
+
+# Init gamepad
+pygame.init()
+pygame.joystick.init()
+joystick = pygame.joystick.Joystick(0)
+joystick.init()
+print(f"Controller: {joystick.get_name()}")
+
+def safe_write(cmd):
+    try:
+        arduino.write(cmd.encode())
+    except Exception as e:
+        print(f"Serial write failed: {e}")
+
+last_throttle = 1500
+last_steer = 'c'
+
+while True:
+    pygame.event.pump()
+
+    # Get trigger values
+    axis_fw = joystick.get_axis(2)  # RT
+    axis_re = joystick.get_axis(5)  # LT
+
+    norm_fw = (axis_fw + 1) / 2     # → 0 to 1
+    norm_re = (axis_re + 1) / 2     # → 0 to 1
+
+    throttle = 1500  # neutral
+
+    # Throttle decision
+    if norm_re > 0.05 and norm_re > norm_fw:
+        throttle = int(1500 - norm_re * 500)  # reverse
+    elif norm_fw > 0.05:
+        throttle = int(1500 + norm_fw * 500)  # forward
+
+    # Only send throttle if changed significantly
+    if abs(throttle - last_throttle) > 5:
+        safe_write(f"f{throttle}\n")
+        last_throttle = throttle
+
+    # Steering with left analog X axis (axis 3)
+    steer_val = joystick.get_axis(3)
+    if steer_val > 0.3 and last_steer != 'r':
+        safe_write("r\n")
+        last_steer = 'r'
+    elif steer_val < -0.3 and last_steer != 'l':
+        safe_write("l\n")
+        last_steer = 'l'
+    elif -0.3 <= steer_val <= 0.3 and last_steer != 'c':
+        safe_write("c\n")
+        last_steer = 'c'
+
+    time.sleep(0.01)
