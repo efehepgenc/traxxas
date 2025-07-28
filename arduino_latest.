@@ -1,0 +1,55 @@
+#include <Servo.h>
+
+Servo esc;
+Servo steering;
+
+void setup() {
+  Serial.begin(9600);
+
+  esc.attach(6);        // ESC signal pin
+  steering.attach(9);   // Steering servo
+
+  esc.writeMicroseconds(1500); // Neutral
+  steering.write(90);          // Center steering
+  delay(5000);                 // ESC arming delay
+
+  Serial.setTimeout(10);       // Small timeout for input parsing
+}
+
+void loop() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');  // Read full line
+    input.trim();  // Remove newline or spaces
+
+    if (input.length() == 0) return; // Ignore empty messages
+
+    // Throttle input: starts with 'f' followed by a number
+    if (input.charAt(0) == 'f' && input.length() > 1) {
+      int value = input.substring(1).toInt();
+      if (value >= 1000 && value <= 2000) {
+        esc.writeMicroseconds(value);
+        Serial.print("Throttle set to: ");
+        Serial.println(value);
+      }
+
+    } else {
+      // Single character steering commands
+      char command = input.charAt(0);
+      switch (command) {
+        case 'f': esc.writeMicroseconds(1525); break; // Forward (slow)
+        case 'b': esc.writeMicroseconds(1475); break; // Reverse (slow)
+        case 's': esc.writeMicroseconds(1500); break; // Stop
+        case 'l': steering.write(30); break;          // Left
+        case 'r': steering.write(150); break;         // Right
+        case 'c': steering.write(90); break;          // Center
+        default:
+          Serial.print("Unknown command: ");
+          Serial.println(command);
+          break;
+      }
+    }
+
+    // Flush remaining data in buffer if any
+    while (Serial.available()) Serial.read();
+  }
+}
