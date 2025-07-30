@@ -1,36 +1,38 @@
+import serial
 import time
 import sys
-import bluetooth # HC-05 iletişimi için
+# import bluetooth # ARTIK GEREKLİ DEĞİL!
 
 # --- AYARLAR ---
-# Bluetooth HC-05 Haberleşme (Konum Verisi Alan)
-# Konum Arduino'suna bağlı HC-05'in MAC adresi
-HC05_POS_MAC_ADDRESS = '00:24:09:01:04:8A' # BURAYI KENDİ KONUM HC-05 MAC ADRESİNİZLE DEĞİŞTİRİN!
-HC05_POS_PORT = 1 # Genellikle RFCOMM seri portu için 1 kullanılır
+# HC-05'in bağlı olduğu Raspberry Pi'nin seri portu.
+# "/dev/serial0" genellikle Bluetooth devre dışı bırakıldıktan sonraki doğru yoldur.
+SERIAL_PORT = '/dev/serial0' 
+BAUD_RATE = 9600 # HC-05 modülleri ve Konum Arduino'nuzdaki seri baud rate ile aynı olmalı
 
 # Döngü Zamanlaması
 LOOP_DELAY_SEC = 0.05 # Saniyede 20 (1/0.05) güncelleme. CPU kullanımını düşürür.
 
-# Bluetooth Soketi
-hc05_pos_socket = None
+# Seri Port Nesnesi
+ser = None
 
-def setup_hc05_pos_receiver():
-    """Konum verisi alan HC-05 bağlantısını kurar."""
-    global hc05_pos_socket
-    print(f"Konum Alıcı HC-05'e ({HC05_POS_MAC_ADDRESS}) bağlanmaya çalışılıyor...")
+def setup_serial_connection():
+    """Seri port bağlantısını kurar."""
+    global ser
+    print(f"{SERIAL_PORT} portuna bağlanmaya çalışılıyor...")
     try:
-        hc05_pos_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-        hc05_pos_socket.connect((HC05_POS_MAC_ADDRESS, HC05_POS_PORT))
-        hc05_pos_socket.settimeout(0.1) # Non-blocking read (okurken beklemez)
-        print(f"Konum Alıcı HC-05'e başarıyla bağlanıldı.")
+        # timeout=0.1: ser.read() fonksiyonunun veri gelene kadar sonsuza kadar beklememesini sağlar.
+        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1) 
+        time.sleep(2) # Portun açılması için kısa bir gecikme (Arduino'lar için bazen gerekli)
+        ser.reset_input_buffer() # Önceki tamponda kalmış verileri temizle
+        print(f"Seri porta ({SERIAL_PORT}) başarıyla bağlanıldı.")
         return True
-    except bluetooth.btcommon.BluetoothError as e:
-        print(f"HATA: Konum Alıcı HC-05'e bağlanılamadı: {e}. Lütfen MAC adresini, eşleşmeyi ve Bluetooth servisini kontrol edin.")
-        print("Bağlantı sorunu devam ederse, 'sudo bluetoothctl' komutunu kullanarak HC-05'inizi eşleştirmeyi deneyin.")
+    except serial.SerialException as e:
+        print(f"HATA: Seri porta bağlanılamadı: {e}. Lütfen port adını, bağlantıları ve 'raspi-config'/'config.txt' ayarlarını kontrol edin.")
+        print("Yaygın nedenler: Yanlış port adı, baud rate uyuşmazlığı, seri konsol açık, Bluetooth kapalı değil.")
         return False
 
 def process_and_print_position_data(data):
-    """Bluetooth'tan gelen konum verisini ayrıştırır ve ekrana yazdırır."""
+    """Gelen konum verisini ayrıştırır ve ekrana yazdırır."""
     if data.startswith("POS"):
         try:
             # 'POSX10.5Y20.2Z5.0H45.0' formatı bekleniyor
@@ -61,35 +63,40 @@ def process_and_print_position_data(data):
             print(f"HATA: Konum verisi ayrıştırma hatası. Geçersiz format: {data}. Hata: {e}")
             print("Beklenen format: POSX<sayı>Y<sayı>Z<sayı>H<sayı>")
     else:
-        print(f"UYARI: Bilinmeyen Bluetooth verisi veya formatı: {data}")
+        print(f"UYARI: Bilinmeyen seri veri veya formatı: {data}")
 
 # --- Ana Program Akışı ---
 if __name__ == "__main__":
     try:
-        import pygame # Sadece CTRL+C ile çıkış için kullanılıyor
+        # Pygame, Ctrl+C ile düzgün çıkış için. İsteğe bağlıdır.
+        import pygame 
         pygame.init()
     except Exception as e:
         print(f"UYARI: Pygame başlatılamadı: {e}. Program sonlandırılırken kontrol için 'Ctrl+C' kullanın.")
 
-    if not setup_hc05_pos_receiver():
+    if not setup_serial_connection():
         sys.exit(1)
 
-    print("\nKonum Arduino'sundan Bluetooth verisi bekleniyor ve ekrana yazdırılacak.")
+    print("\nHC-05 (GPIO'ya bağlı) üzerinden konum verisi bekleniyor ve ekrana yazdırılacak.")
     print("Çıkmak için CTRL+C'ye basın.")
+
+    received_buffer = "" # Seri porttan gelen veriyi satır satır işlemek için tampon
 
     try:
         while True:
-            # Konum Arduino'sundan veri oku (Bluetooth üzerinden)
-            try:
-                # Küçük veri paketleri için 1024 yeterlidir, ancak gerekirse artırılabilir
-                pos_data = hc05_pos_socket.recv(1024).decode('utf-8').strip()
-                if pos_data:
-                    process_and_print_position_data(pos_data) # Gelen konumu işle ve yazdır
-            except bluetooth.btcommon.BluetoothError as e:
-                if "timed out" not in str(e): # Timeout hatası normal, diğerlerini yazdır
-                    print(f"Konum Alıcı Bluetooth okuma hatası: {e}")
-            except Exception as e:
-                print(f"Konum verisi alırken beklenmeyen bir hata oluştu: {e}")
+            # Seri portta okunacak veri var mı?
+            if ser.in_waiting > 0:
+                # Gelen tüm baytları oku
+                received_bytes = ser.read(ser.in_waiting)
+                # Baytları UTF-8 string'e çevir, hata durumunda karakterleri yoksay
+                received_buffer += received_bytes.decode('utf-8', errors='ignore') 
+
+                # Tamponda tamamlanmış bir satır varsa işle
+                while '\n' in received_buffer:
+                    line, received_buffer = received_buffer.split('\n', 1)
+                    line = line.strip() # Baştaki/sondaki boşlukları temizle
+                    if line: # Boş satırları atla
+                        process_and_print_position_data(line)
 
             # Pygame olaylarını işle (Ctrl+C ile çıkışı sağlamak için)
             pygame.event.pump()
@@ -105,9 +112,9 @@ if __name__ == "__main__":
     finally:
         # --- Temizlik ---
         print("Temizlik yapılıyor...")
-        if hc05_pos_socket:
-            hc05_pos_socket.close()
-            print("Konum Alıcı HC-05 soketi kapatıldı.")
+        if ser and ser.is_open:
+            ser.close()
+            print("Seri port kapatıldı.")
         
         if 'pygame' in sys.modules and pygame.get_init():
              pygame.quit()
