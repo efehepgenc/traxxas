@@ -16,7 +16,7 @@ ARDUINO_BAUD_RATE = 9600             # Rover Arduino kodunuzdaki ile aynı olmal
 
 # Rover Kontrol Parametreleri
 THROTTLE_MID = 1500 # ESC için nötr değeri
-THROTTLE_FORWARD_SPEED = 1600 # İleri giderken kullanılacak sabit hız
+THROTTLE_FORWARD_SPEED = 1550 # İleri giderken kullanılacak sabit hız
 THROTTLE_STOP_THRESHOLD = 5 # Durma komutu gönderildiğinde küçük salınımları engellemek için
 
 # Navigasyon Parametreleri
@@ -30,8 +30,8 @@ target_y = 0.0
 target_z = 0.0
 is_target_set = False # Yeni bir hedef belirlenip belirlenmediğini takip et
 
-TARGET_REACH_DISTANCE = 5.0 # Hedefe ne kadar yaklaştığımızda duracağımız (birimlerinizle aynı olmalı)
-STEER_THRESHOLD_DEGREES = 5 # Hedefe dönmek için açısal eşik (bu eşikten büyükse dön)
+TARGET_REACH_DISTANCE = 0.5 # Hedefe ne kadar yaklaştığımızda duracağımız (birimlerinizle aynı olmalı)
+STEER_THRESHOLD_DEGREES = 0.5 # Hedefe dönmek için açısal eşik (bu eşikten büyükse dön)
 
 # Döngü Zamanlaması
 LOOP_DELAY_SEC = 0.05 # Saniyede 20 (1/0.05) güncelleme. CPU kullanımını düşürür.
