@@ -7,7 +7,7 @@ import bluetooth # HC-05 iletişimi için
 # --- AYARLAR ---
 # Bluetooth HC-05 Haberleşme (Konum Verisi Alan)
 # Konum Arduino'suna bağlı HC-05'in MAC adresi
-HC05_POS_MAC_ADDRESS = '0024:09:01048A' # BURAYI KENDİ KONUM HC-05 MAC ADRESİNİZLE DEĞİŞTİRİN!
+HC05_POS_MAC_ADDRESS = '00:24:09:01:04:8A' # BURAYI KENDİ KONUM HC-05 MAC ADRESİNİZLE DEĞİŞTİRİN!
 HC05_POS_PORT = 1
 
 # Rover Arduino Seri Haberleşme (USB ile Bağlı)
