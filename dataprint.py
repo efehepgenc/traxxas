@@ -6,7 +6,7 @@ import sys
 # HC-05'in bağlı olduğu Raspberry Pi'nin seri portu.
 # Onboard Bluetooth devre dışı bırakıldığında bu adresi kullanırız.
 SERIAL_PORT = '/dev/serial0' 
-BAUD_RATE = 9600 # Arduino ve HC-05 modülleri arasındaki baud rate ile aynı olmalı
+BAUD_RATE = 38400 # Arduino ve HC-05 modülleri arasındaki baud rate ile aynı olmalı
 
 # Seri Port Nesnesi
 ser = None
