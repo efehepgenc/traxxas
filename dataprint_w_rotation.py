@@ -64,7 +64,7 @@ def process_and_print_position_data(data):
                 rot_x, rot_y, rot_z = rot_coords
                 pos_x, pos_y, pos_z = pos_coords
                 
-                print(f"Alınan Rotasyon: X={rot_x:.6f}, Y={rot_y:.6f}, Z={rot_z:.6f}")
+                print(f"Alınan Rotasyon: ROLL={rot_x:.6f}, YAW={rot_y:.6f}, PITCH={rot_z:.6f}")
                 print(f"Alınan Konum: X={pos_x:.6f}, Y={pos_y:.6f}, Z={pos_z:.6f}")
             else:
                 print(f"UYARI: Ayrıştırma hatası. Rotasyon ve/veya konum koordinatları eksik. Veri: {data}")
