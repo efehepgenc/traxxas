@@ -1,234 +1,195 @@
+import pygame
 import serial
 import time
 import sys
-import math
-import bluetooth # HC-05 iletişimi için
 
-# --- AYARLAR ---
-# Bluetooth HC-05 Haberleşme (Konum Verisi Alan)
-# Konum Arduino'suna bağlı HC-05'in MAC adresi
-HC05_POS_MAC_ADDRESS = '00:24:09:01:04:8A' # BURAYI KENDİ KONUM HC-05 MAC ADRESİNİZLE DEĞİŞTİRİN!
-HC05_POS_PORT = 1
+# --- GENEL AYARLAR ---
+JOYSTICK_ID = 0          # Genellikle 0'dır
+LOOP_DELAY = 0.05        # Saniyede 20 (1/0.05) güncelleme. CPU kullanımını düşürür.
 
-# Rover Arduino Seri Haberleşme (USB ile Bağlı)
-ARDUINO_SERIAL_PORT = '/dev/ttyACM0' # Rover Arduino'nuzun bağlı olduğu USB portu
-ARDUINO_BAUD_RATE = 9600             # Rover Arduino kodunuzdaki ile aynı olmalı
+# --- ARDUINO SERİ HABERLEŞME AYARLARI (Manuel Kontrol) ---
+SERIAL_PORT_ARDUINO = '/dev/ttyACM0'  # Arduino'nun bağlı olduğu port
+BAUD_RATE_ARDUINO = 9600              # Arduino kodunuzdaki ile aynı olmalı
+arduino_ser = None
 
-# Rover Kontrol Parametreleri
-THROTTLE_MID = 1500 # ESC için nötr değeri
-THROTTLE_FORWARD_SPEED = 1550 # İleri giderken kullanılacak sabit hız
-THROTTLE_STOP_THRESHOLD = 5 # Durma komutu gönderildiğinde küçük salınımları engellemek için
+# --- OPTITRACK SERİ HABERLEŞME AYARLARI (Veri Okuma) ---
+SERIAL_PORT_OPTITRACK = '/dev/serial0' # GPIO 14/15'e bağlı HC-05 için
+BAUD_RATE_OPTITRACK = 38400            # OptiTrack göndericisindeki baud rate ile aynı olmalı
+optitrack_ser = None
 
-# Navigasyon Parametreleri
-current_rover_x = 0.0
-current_rover_y = 0.0
-current_rover_z = 0.0 # Z koordinatı OptiTrack'ten gelebilir
-current_rover_heading = 0.0 # Rover'ın anlık yönü (derece cinsinden, 0-360)
+# --- Joystick ve Pygame Ayarları ---
+joystick = None
 
-target_x = 0.0
-target_y = 0.0
-target_z = 0.0
-is_target_set = False # Yeni bir hedef belirlenip belirlenmediğini takip et
-
-TARGET_REACH_DISTANCE = 0.1 # Hedefe ne kadar yaklaştığımızda duracağımız (birimlerinizle aynı olmalı)
-STEER_THRESHOLD_DEGREES = 0.1 # Hedefe dönmek için açısal eşik (bu eşikten büyükse dön)
-
-# Döngü Zamanlaması
-LOOP_DELAY_SEC = 0.05 # Saniyede 20 (1/0.05) güncelleme. CPU kullanımını düşürür.
-
-# Haberleşme Nesneleri
-hc05_pos_socket = None # Konum verisi için Bluetooth soketi
-rover_arduino_serial = None # Rover kontrolü için seri port nesnesi
-
-def setup_hc05_pos_receiver():
-    global hc05_pos_socket
-    print(f"Konum Alıcı HC-05'e ({HC05_POS_MAC_ADDRESS}) bağlanmaya çalışılıyor...")
+def setup_all_connections():
+    """Tüm bağlantıları (Arduino, OptiTrack ve Joystick) kurar."""
+    
+    global arduino_ser, optitrack_ser, joystick
+    
+    # 1. ARDUINO BAĞLANTISI
+    print(f"Bilgi: Arduino'ya {SERIAL_PORT_ARDUINO} portundan bağlanılıyor...")
     try:
-        hc05_pos_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-        hc05_pos_socket.connect((HC05_POS_MAC_ADDRESS, HC05_POS_PORT))
-        hc05_pos_socket.settimeout(0.1) # Non-blocking read
-        print(f"Konum Alıcı HC-05'e başarıyla bağlanıldı.")
-        return True
-    except bluetooth.btcommon.BluetoothError as e:
-        print(f"HATA: Konum Alıcı HC-05'e bağlanılamadı: {e}. Lütfen MAC adresini, eşleşmeyi ve Bluetooth servisini kontrol edin.")
-        return False
-
-def setup_rover_arduino_serial():
-    global rover_arduino_serial
-    try:
-        rover_arduino_serial = serial.Serial(ARDUINO_SERIAL_PORT, ARDUINO_BAUD_RATE, timeout=0.1)
-        time.sleep(2) # Arduino'nun kendine gelmesi için zaman tanı
-        rover_arduino_serial.reset_input_buffer()
-        print(f"Rover Arduino'ya {ARDUINO_SERIAL_PORT} portundan başarıyla bağlanıldı.")
-        return True
+        arduino_ser = serial.Serial(SERIAL_PORT_ARDUINO, BAUD_RATE_ARDUINO, timeout=1)
+        time.sleep(2)
+        arduino_ser.reset_input_buffer()
+        print(f"Başarılı: Arduino'ya {SERIAL_PORT_ARDUINO} portundan bağlanıldı.")
     except serial.SerialException as e:
-        print(f"HATA: Rover Arduino'ya bağlanılamadı: {e}")
+        print(f"HATA: Arduino'ya bağlanılamadı: {e}")
+        print("Lütfen port adını ve baud rate'i kontrol edin.")
+        return False
+        
+    # 2. OPTITRACK SERİ PORT BAĞLANTISI
+    print(f"Bilgi: OptiTrack verisi için {SERIAL_PORT_OPTITRACK} portuna bağlanılıyor...")
+    try:
+        optitrack_ser = serial.Serial(SERIAL_PORT_OPTITRACK, BAUD_RATE_OPTITRACK, timeout=0.1) 
+        time.sleep(2)
+        optitrack_ser.reset_input_buffer()
+        print(f"Başarılı: OptiTrack seri portuna ({SERIAL_PORT_OPTITRACK}) bağlanıldı.")
+    except serial.SerialException as e:
+        print(f"HATA: OptiTrack seri portuna bağlanılamadı: {e}.")
+        print("Lütfen Pi'nin `config.txt` dosyasını ve bağlantıları kontrol edin.")
         return False
 
-# --- Rover'a Komut Gönderme Fonksiyonu (Seri Port üzerinden) ---
-def send_command_to_rover(command_str):
-    """Rover Arduino'ya seri port üzerinden komutları güvenli bir şekilde gönderir."""
-    if rover_arduino_serial and rover_arduino_serial.is_open:
+    # 3. JOYSTICK BAĞLANTISI
+    try:
+        pygame.init()
+        pygame.joystick.init()
+        if pygame.joystick.get_count() > 0:
+            joystick = pygame.joystick.Joystick(JOYSTICK_ID)
+            joystick.init()
+            print(f"Başarılı: Kontrolcü bulundu: {joystick.get_name()}")
+        else:
+            print("HATA: Takılı kontrolcü bulunamadı.")
+            return False
+    except pygame.error as e:
+        print(f"HATA: Pygame veya kontrolcü başlatılamadı: {e}")
+        return False
+        
+    return True
+
+def send_arduino_command(command):
+    """Arduino'ya komutları güvenli bir şekilde gönderir."""
+    if arduino_ser and arduino_ser.is_open:
         try:
-            full_command = command_str + "\n" # Arduino'nun satır sonu beklediği için '\n' ekle
-            rover_arduino_serial.write(full_command.encode('ascii')) # Komutları ASCII olarak gönder
-            # print(f"Rover'a gönderildi (USB): {full_command.strip()}") # Hata ayıklama için
-            return True
+            full_command = command + "\n"
+            arduino_ser.write(full_command.encode('utf-8'))
         except serial.SerialException as e:
-            print(f"UYARI: Seri yazma hatası (Rover), bağlantı kesilmiş olabilir: {e}")
-            return False
-        except Exception as e:
-            print(f"UYARI: Seri yazma sırasında beklenmeyen bir hata oluştu (Rover): {e}")
-            return False
-    else:
-        print("UYARI: Komut göndermeye çalışıldı ancak Rover Arduino seri portu açık değil.")
-        return False
+            print(f"Seri yazma hatası: {e}")
 
-# --- Konum Verisi İşleme Fonksiyonu ---
-def process_position_data(data):
-    """Bluetooth'tan gelen konum verisini ayrıştırır ve global değişkenleri günceller."""
-    global current_rover_x, current_rover_y, current_rover_z, current_rover_heading
-
-    if data.startswith("POS"):
-        try:
-            # 'POSX10.5Y20.2Z5.0H45.0' formatı bekleniyor
-            parts = {}
-            remaining = data[3:] # 'POS' kısmını atla
+def process_optitrack_data(data):
+    """Gelen [rotasyon, konum, zaman] verisini ayrıştırır."""
+    try:
+        cleaned_data = data.strip('[]\n\r ')
+        
+        parts = cleaned_data.rsplit(',', 1)
+        
+        if len(parts) == 2:
+            time_data = float(parts[1].strip())
+            coords_data = parts[0].strip()
             
-            x_idx = remaining.find('X')
-            y_idx = remaining.find('Y')
-            z_idx = remaining.find('Z')
-            h_idx = remaining.find('H')
+            coords_parts = coords_data.split('),(')
 
-            if x_idx != -1 and y_idx != -1 and z_idx != -1 and h_idx != -1:
-                current_rover_x = float(remaining[x_idx+1 : y_idx])
-                current_rover_y = float(remaining[y_idx+1 : z_idx])
-                current_rover_z = float(remaining[z_idx+1 : h_idx])
-                current_rover_heading = float(remaining[h_idx+1 :])
-
-                # Yönü 0-360 arasına normalleştir
-                current_rover_heading = current_rover_heading % 360
-                if current_rover_heading < 0:
-                    current_rover_heading += 360
-
-                # print(f"Rover'ın güncel konumu alındı: X={current_rover_x:.2f}, Y={current_rover_y:.2f}, Z={current_rover_z:.2f}, Yön={current_rover_heading:.2f}°")
+            if len(coords_parts) == 2:
+                rotation_data = coords_parts[0].strip('(')
+                position_data = coords_parts[1].strip(')')
+                
+                rot_coords = [float(c.strip()) for c in rotation_data.split(',')]
+                pos_coords = [float(c.strip()) for c in position_data.split(',')]
+                
+                if len(rot_coords) == 3 and len(pos_coords) == 3:
+                    rot_x, rot_y, rot_z = rot_coords
+                    pos_x, pos_y, pos_z = pos_coords
+                    
+                    print(f"OptiTrack Rotasyon: X={rot_x:.6f}, Y={rot_y:.6f}, Z={rot_z:.6f}")
+                    print(f"OptiTrack Konum: X={pos_x:.6f}, Y={pos_y:.6f}, Z={pos_z:.6f}")
+                    print(f"OptiTrack Zaman: {time_data:.6f}")
+                else:
+                    print(f"UYARI: Ayrıştırma hatası. Rotasyon ve/veya konum koordinatları eksik. Veri: {data}")
             else:
-                print(f"HATA: Konum verisi ayrıştırma hatası. Geçersiz format: {data}")
-                print("Beklenen format: POSX<sayı>Y<sayı>Z<sayı>H<sayı>")
+                print(f"UYARI: Ayrıştırma hatası. Beklenmedik format: {data}")
+        else:
+            print(f"UYARI: Ayrıştırma hatası. Zaman değeri eksik. Beklenmedik format: {data}")
 
-        except (IndexError, ValueError) as e:
-            print(f"HATA: Konum verisi ayrıştırma hatası. Geçersiz format: {data}. Hata: {e}")
-            print("Beklenen format: POSX<sayı>Y<sayı>Z<sayı>H<sayı>")
-    else:
-        print(f"UYARI: Bilinmeyen Bluetooth verisi veya formatı: {data}")
+    except (ValueError, IndexError) as e:
+        print(f"HATA: Veri dönüştürme hatası. Geçersiz format: {data}. Hata: {e}")
 
-# --- Ana Navigasyon Döngüsü ---
-def navigate_rover():
-    global target_x, target_y, is_target_set
-    global current_rover_x, current_rover_y, current_rover_heading
-
-    if not is_target_set:
-        return # Hedef belirlenmediyse navigasyon yapma
-
-    dx = target_x - current_rover_x
-    dy = target_y - current_rover_y
-    distance_to_target = math.hypot(dx, dy)
-
-    if distance_to_target < TARGET_REACH_DISTANCE:
-        send_command_to_rover(f"t{THROTTLE_MID}") # Motoru nötr
-        send_command_to_rover("sc") # Direksiyonu merkez
-        print(f"Hedefe ulaşıldı! Son konum: ({current_rover_x:.2f}, {current_rover_y:.2f})")
-        is_target_set = False
-        return
-
-    # Hedefe olan açıyı hesapla (radyan cinsinden, sonra dereceye çevir)
-    angle_to_target_rad = math.atan2(dy, dx)
-    angle_to_target_deg = math.degrees(angle_to_target_rad)
-
-    # Rover'ın mevcut yönü ile hedefe olan açı arasındaki farkı bul
-    angle_diff = angle_to_target_deg - current_rover_heading
-    if angle_diff > 180:
-        angle_diff -= 360
-    elif angle_diff < -180:
-        angle_diff += 360
-
-    print(f"Konum: ({current_rover_x:.2f}, {current_rover_y:.2f}), Yön: {current_rover_heading:.2f}°, Hedef: ({target_x}, {target_y}), Mesafe: {distance_to_target:.2f}, Açı Farkı: {angle_diff:.2f}°")
-
-    if abs(angle_diff) > STEER_THRESHOLD_DEGREES:
-        if angle_diff > 0: # Sağa dön (hedef sağda)
-            send_command_to_rover("sr")
-        else: # Sola dön (hedef solda)
-            send_command_to_rover("sl")
-        send_command_to_rover(f"t{THROTTLE_MID}") # Dönüş sırasında ilerlemeyi durdur
-    else: # Yön hedefe yakınsa ileri git
-        send_command_to_rover(f"t{THROTTLE_FORWARD_SPEED}")
-        send_command_to_rover("sc") # Düz gitmek için direksiyonu ortaya al
 
 # --- Ana Program Akışı ---
 if __name__ == "__main__":
-    try:
-        import pygame
-        pygame.init()
-    except Exception as e:
-        print(f"UYARI: Pygame başlatılamadı: {e}. Program sonlandırılırken kontrol için 'Ctrl+C' kullanın.")
-
-    # Bluetooth (konum) ve Seri (rover) bağlantılarını kur
-    if not setup_hc05_pos_receiver():
-        sys.exit(1)
-    if not setup_rover_arduino_serial():
+    if not setup_all_connections():
         sys.exit(1)
 
-    print("\nKonum Arduino'sundan veri bekleniyor ve Rover'a komut gönderilmeye başlanacak.")
-    print(f"Başlangıç Konumu: ({current_rover_x:.2f}, {current_rover_y:.2f}), Yön: {current_rover_heading:.2f}°")
-    print("Çıkmak için CTRL+C'ye basın.")
-
-    # --- TEST AMAÇLI: Bir hedef belirleyelim ---
-    target_x = 100.0 # Örnek hedef X koordinatı
-    target_y = 50.0  # Örnek hedef Y koordinatı
-    is_target_set = True
-    print(f"TEST HEDEFİ BELİRLENDİ: X={target_x}, Y={target_y}")
+    print("\nKontrol ve veri okuma döngüsü başlatıldı. Çıkmak için CTRL+C'ye basın.")
+    
+    # Joystick komutları için son değerleri tutuyoruz
+    last_throttle = 1500
+    last_steering = 'c'
+    
+    # OptiTrack verisi için bir tampon oluşturuyoruz
+    optitrack_buffer = ""
 
     try:
         while True:
-            # Konum Arduino'sundan veri oku (Bluetooth üzerinden)
-            try:
-                pos_data = hc05_pos_socket.recv(1024).decode('utf-8').strip()
-                if pos_data:
-                    process_position_data(pos_data) # Gelen konumu işle
-            except bluetooth.btcommon.BluetoothError as e:
-                if "timed out" not in str(e):
-                    print(f"Konum Alıcı Bluetooth okuma hatası: {e}")
-            except Exception as e:
-                print(f"Konum verisi alırken beklenmeyen bir hata oluştu: {e}")
-
-            # Navigasyon mantığını çalıştır
-            navigate_rover()
-
+            # 1. JOYSTICK'TEN GİRİŞLERİ OKU VE ARDUINO'YA GÖNDER
             pygame.event.pump()
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    print("Pygame kapatma olayı algılandı. Çıkış yapılıyor.")
-                    raise KeyboardInterrupt
+            
+            # Gaz (Throttle) Kontrolü
+            forward_axis = (joystick.get_axis(2) + 1) / 2
+            reverse_axis = (joystick.get_axis(5) + 1) / 2
+            current_throttle = 1500
+            if reverse_axis > 0.05 and reverse_axis > forward_axis:
+                current_throttle = int(1500 - reverse_axis * 500)
+            elif forward_axis > 0.05:
+                current_throttle = int(1500 + forward_axis * 500)
+            
+            # Direksiyon (Steering) Kontrolü
+            steer_axis = joystick.get_axis(3)
+            current_steering = last_steering
+            if steer_axis > 0.3:
+                current_steering = 'r'
+            elif steer_axis < -0.3:
+                current_steering = 'l'
+            else:
+                current_steering = 'c'
+            
+            # Sadece değerler değiştiyse komut gönder
+            if abs(current_throttle - last_throttle) > 5:
+                send_arduino_command(f"t{current_throttle}")
+                last_throttle = current_throttle
+            
+            if current_steering != last_steering:
+                send_arduino_command(f"s{current_steering}")
+                last_steering = current_steering
 
-            time.sleep(LOOP_DELAY_SEC)
+            # 2. OPTITRACK SERİ PORTUNDAN VERİ OKU VE İŞLE
+            if optitrack_ser.in_waiting > 0:
+                received_bytes = optitrack_ser.read(optitrack_ser.in_waiting)
+                optitrack_buffer += received_bytes.decode('utf-8', errors='ignore')
+
+                while '\n' in optitrack_buffer:
+                    line, optitrack_buffer = optitrack_buffer.split('\n', 1)
+                    line = line.strip() 
+                    if line:
+                        process_optitrack_data(line)
+            
+            # Döngüyü yavaşlat
+            time.sleep(LOOP_DELAY)
 
     except KeyboardInterrupt:
-        print("\nProgram sonlandırılıyor. Araç durduruluyor.")
+        print("\nProgram sonlandırılıyor. Bağlantılar kapatılıyor.")
     finally:
-        # --- Temizlik ---
-        print("Temizlik yapılıyor...")
-        send_command_to_rover(f"t{THROTTLE_MID}") # Motoru nötr
-        send_command_to_rover("sc")              # Direksiyonu ortaya al
-        time.sleep(0.1)
-
-        if hc05_pos_socket:
-            hc05_pos_socket.close()
-            print("Konum Alıcı HC-05 soketi kapatıldı.")
-        if rover_arduino_serial and rover_arduino_serial.is_open:
-            rover_arduino_serial.close()
-            print("Rover Arduino seri portu kapatıldı.")
+        # Program sonlandığında tüm bağlantıları kapat ve araçları durdur
+        print("Son komutlar gönderiliyor...")
+        send_arduino_command("t1500") # Motoru nötr konuma getir
+        send_arduino_command("sc")    # Direksiyonu ortaya al
         
-        if 'pygame' in sys.modules and pygame.get_init():
-             pygame.quit()
-        print("Tüm bağlantılar kapatıldı. Güle güle!")
+        if arduino_ser and arduino_ser.is_open:
+            arduino_ser.close()
+            print("Arduino seri portu kapatıldı.")
+            
+        if optitrack_ser and optitrack_ser.is_open:
+            optitrack_ser.close()
+            print("OptiTrack seri portu kapatıldı.")
+            
+        pygame.quit()
+        print("Güle güle!")
         sys.exit(0)
