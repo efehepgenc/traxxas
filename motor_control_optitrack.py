@@ -76,40 +76,45 @@ def send_arduino_command(command):
             print(f"Seri yazma hatası: {e}")
 
 def process_optitrack_data(data):
-    """Gelen [rotasyon, konum, zaman] verisini ayrıştırır."""
+    """
+    Gelen [rotasyon, konum] verisini ayrıştırır.
+    Format hatası durumunda uyarı verir.
+    Yeni format: [(x,y,z),(x,y,z)]
+    """
     try:
+        # Gelen string'den köşeli parantezleri ve boşlukları temizle
+        # Örnek: "[(0.1,0.2,0.3),(10.5,20.2,5.0)]" -> "(0.1,0.2,0.3),(10.5,20.2,5.0)"
         cleaned_data = data.strip('[]\n\r ')
         
-        parts = cleaned_data.rsplit(',', 1)
+        # Rotasyon ve konum verilerini ayır
+        # Örnek: "(0.1,0.2,0.3),(10.5,20.2,5.0)" -> ["(0.1,0.2,0.3)", "(10.5,20.2,5.0)"]
+        parts = cleaned_data.split('),(')
         
         if len(parts) == 2:
-            time_data = float(parts[1].strip())
-            coords_data = parts[0].strip()
+            # Rotasyon ve konum string'lerini al
+            rotation_str = parts[0].strip('(')
+            position_str = parts[1].strip(')')
             
-            coords_parts = coords_data.split('),(')
-
-            if len(coords_parts) == 2:
-                rotation_data = coords_parts[0].strip('(')
-                position_data = coords_parts[1].strip(')')
+            # Rotasyon koordinatlarını al ve float'a çevir
+            rot_coords = [float(c.strip()) for c in rotation_str.split(',')]
+            
+            # Konum koordinatlarını al ve float'a çevir
+            pos_coords = [float(c.strip()) for c in position_str.split(',')]
+            
+            # Eğer her ikisi de 3 koordinata sahipse ekrana yazdır
+            if len(rot_coords) == 3 and len(pos_coords) == 3:
+                rot_x, rot_y, rot_z = rot_coords
+                pos_x, pos_y, pos_z = pos_coords
                 
-                rot_coords = [float(c.strip()) for c in rotation_data.split(',')]
-                pos_coords = [float(c.strip()) for c in position_data.split(',')]
-                
-                if len(rot_coords) == 3 and len(pos_coords) == 3:
-                    rot_x, rot_y, rot_z = rot_coords
-                    pos_x, pos_y, pos_z = pos_coords
-                    
-                    print(f"OptiTrack Rotasyon: X={rot_x:.6f}, Y={rot_y:.6f}, Z={rot_z:.6f}")
-                    print(f"OptiTrack Konum: X={pos_x:.6f}, Y={pos_y:.6f}, Z={pos_z:.6f}")
-                    print(f"OptiTrack Zaman: {time_data:.6f}")
-                else:
-                    print(f"UYARI: Ayrıştırma hatası. Rotasyon ve/veya konum koordinatları eksik. Veri: {data}")
+                print(f"OptiTrack Rotasyon: X={rot_x:.6f}, Y={rot_y:.6f}, Z={rot_z:.6f}")
+                print(f"OptiTrack Konum: X={pos_x:.6f}, Y={pos_y:.6f}, Z={pos_z:.6f}")
             else:
-                print(f"UYARI: Ayrıştırma hatası. Beklenmedik format: {data}")
+                print(f"UYARI: Ayrıştırma hatası. Rotasyon ve/veya konum koordinatları eksik. Veri: {data}")
         else:
-            print(f"UYARI: Ayrıştırma hatası. Zaman değeri eksik. Beklenmedik format: {data}")
+            print(f"UYARI: Ayrıştırma hatası. Beklenmedik format: {data}")
 
     except (ValueError, IndexError) as e:
+        # float'a çevirme hatası veya liste indeksi hatası yakalanır
         print(f"HATA: Veri dönüştürme hatası. Geçersiz format: {data}. Hata: {e}")
 
 
