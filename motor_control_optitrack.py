@@ -38,7 +38,7 @@ def setup_all_connections():
         arduino_ser.reset_input_buffer() # Gelen tamponu temizle
         print(f"Başarılı: Arduino'ya {SERIAL_PORT_ARDUINO} portundan bağlanıldı.")
     except serial.SerialException as e:
-        print(f"HATA: Arduino'ya bağlanılamadı: {e}")
+        print(f"HATA: Arduino seri portuna bağlanılamadı: {e}")
         print("Lütfen Arduino'nun bağlı olduğundan, port adının ve baud rate'in doğru olduğundan emin olun.")
         return False
         
@@ -55,6 +55,7 @@ def setup_all_connections():
         return False
 
     # 3. Pygame ve Joystick Bağlantısı Kurulumu
+    print("Bilgi: Pygame ve Joystick başlatılıyor...")
     try:
         pygame.init() # Pygame'i başlat
         pygame.joystick.init() # Joystick modülünü başlat
@@ -63,10 +64,11 @@ def setup_all_connections():
             joystick.init() # Joystick'i başlat
             print(f"Başarılı: Kontrolcü bulundu: {joystick.get_name()}")
         else:
-            print("HATA: Takılı kontrolcü bulunamadı. Lütfen bir kontrolcü bağlayın.")
+            print("HATA: Takılı kontrolcü bulunamadı. Lütfen bir kontrolcü bağlayın ve yeniden deneyin.")
             return False
     except pygame.error as e:
         print(f"HATA: Pygame veya kontrolcü başlatılamadı: {e}")
+        print("Lütfen Pygame'in doğru yüklendiğinden ve kontrolcünüzün Raspberry Pi'ye bağlı olduğundan emin olun.")
         return False
         
     return True # Tüm bağlantılar başarılı
