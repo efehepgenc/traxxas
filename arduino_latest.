@@ -1,55 +1,85 @@
 #include <Servo.h>
 
+// --- Pin Tanımlamaları ---
+const int ESC_PIN = 6;      // ESC sinyal kablosunun bağlı olduğu pin
+const int STEERING_PIN = 9; // Direksiyon servo sinyal kablosunun bağlı olduğu pin
+
+// --- Servo Nesneleri ---
 Servo esc;
 Servo steering;
 
+// --- Ayarlar ---
+const int NEUTRAL_THROTTLE = 1500; // ESC için nötr (durma) değeri (mikrosaniye)
+const int STEERING_CENTER = 90;    // Direksiyon servosu için merkez açı
+const int STEERING_LEFT = 30;      // Direksiyon servosu için sol açı (değeri kendi aracınıza göre ayarlayın)
+const int STEERING_RIGHT = 150;    // Direksiyon servosu için sağ açı (değeri kendi aracınıza göre ayarlayın)
+
 void setup() {
+  // Seri haberleşmeyi başlat (Python betiği ile aynı baud rate)
   Serial.begin(9600);
+  
+  // Seri portun veri okumak için çok uzun süre beklemesini engelle
+  Serial.setTimeout(10); 
 
-  esc.attach(6);        // ESC signal pin
-  steering.attach(9);   // Steering servo
+  // Servoları pinlere ata
+  esc.attach(ESC_PIN);
+  steering.attach(STEERING_PIN);
 
-  esc.writeMicroseconds(1500); // Neutral
-  steering.write(90);          // Center steering
-  delay(5000);                 // ESC arming delay
+  // Başlangıçta aracı güvenli bir duruma getir
+  esc.writeMicroseconds(NEUTRAL_THROTTLE);
+  steering.write(STEERING_CENTER);
 
-  Serial.setTimeout(10);       // Small timeout for input parsing
+  // ESC'nin "arming" (kurulma) işlemi için bekle.
+  // Bu, ESC'nin nötr pozisyonu algılaması için gereklidir.
+  delay(2000); 
+  
+  Serial.println("Arduino hazır. Komutlar bekleniyor...");
 }
 
 void loop() {
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');  // Read full line
-    input.trim();  // Remove newline or spaces
+  // Seri portta okunacak veri var mı diye kontrol et
+  if (Serial.available() > 0) {
+    // Gelen komutu newline (\n) karakterine kadar oku
+    String input = Serial.readStringUntil('\n');
+    input.trim(); // Başındaki ve sonundaki boşlukları temizle
 
-    if (input.length() == 0) return; // Ignore empty messages
-
-    // Throttle input: starts with 'f' followed by a number
-    if (input.charAt(0) == 'f' && input.length() > 1) {
-      int value = input.substring(1).toInt();
-      if (value >= 1000 && value <= 2000) {
-        esc.writeMicroseconds(value);
-        Serial.print("Throttle set to: ");
-        Serial.println(value);
-      }
-
-    } else {
-      // Single character steering commands
-      char command = input.charAt(0);
-      switch (command) {
-        case 'f': esc.writeMicroseconds(1525); break; // Forward (slow)
-        case 'b': esc.writeMicroseconds(1475); break; // Reverse (slow)
-        case 's': esc.writeMicroseconds(1500); break; // Stop
-        case 'l': steering.write(30); break;          // Left
-        case 'r': steering.write(150); break;         // Right
-        case 'c': steering.write(90); break;          // Center
+    // Gelen komut boş değilse işle
+    if (input.length() > 0) {
+      char command_type = input.charAt(0); // Komutun ilk harfini al (t veya s)
+      
+      // Gelen komutun türüne göre işlem yap
+      switch (command_type) {
+        case 't': // Throttle (Gaz) komutu
+          {
+            // 't' harfinden sonraki sayısal değeri al
+            int throttle_value = input.substring(1).toInt();
+            // Değerin güvenli aralıkta olduğundan emin ol
+            if (throttle_value >= 1000 && throttle_value <= 2000) {
+              esc.writeMicroseconds(throttle_value);
+            }
+          }
+          break;
+          
+        case 's': // Steering (Direksiyon) komutu
+          {
+            // 's' harfinden sonraki yön karakterini al
+            char direction = input.charAt(1);
+            if (direction == 'l') {
+              steering.write(STEERING_LEFT);
+            } else if (direction == 'r') {
+              steering.write(STEERING_RIGHT);
+            } else if (direction == 'c') {
+              steering.write(STEERING_CENTER);
+            }
+          }
+          break;
+          
         default:
-          Serial.print("Unknown command: ");
-          Serial.println(command);
+          // Bilinmeyen bir komut gelirse seri monitöre yazdır (hata ayıklama için)
+          // Serial.print("Bilinmeyen komut: ");
+          // Serial.println(input);
           break;
       }
     }
-
-    // Flush remaining data in buffer if any
-    while (Serial.available()) Serial.read();
   }
 }
