@@ -12,13 +12,13 @@ BT_BAUD = 38400
 LOOP_DELAY = 0.05
 JOYSTICK_ID = 0
 
-# --- GLOBALLER ---
+# --- Global değişkenler ---
 arduino = None
-ser_bt = None
+bt_serial = None
 last_throttle = 1500
 last_steering = 'c'
 
-# --- Arduino bağlantısı ---
+# --- Arduino Bağlantısı ---
 def setup_arduino():
     global arduino
     try:
@@ -30,105 +30,98 @@ def setup_arduino():
         print(f"[X] Arduino bağlantı hatası: {e}")
         sys.exit(1)
 
-# --- Bluetooth bağlantısı ---
+# --- Bluetooth Bağlantısı (OptiTrack Verisi) ---
 def setup_bluetooth():
-    global ser_bt
+    global bt_serial
     try:
-        ser_bt = serial.Serial(BT_PORT, BT_BAUD, timeout=0.1)
+        bt_serial = serial.Serial(BT_PORT, BT_BAUD, timeout=0.1)
         time.sleep(2)
-        ser_bt.reset_input_buffer()
-        print(f"[✓] Bluetooth bağlantısı sağlandı: {BT_PORT}")
+        bt_serial.reset_input_buffer()
+        print(f"[✓] Bluetooth bağlantısı: {BT_PORT}")
     except serial.SerialException as e:
         print(f"[X] Bluetooth bağlantı hatası: {e}")
         sys.exit(1)
 
-# --- Bluetooth verisi ayrıştırıcı ---
+# --- Gelen Veriyi Ayrıştır ve Yazdır ---
 def process_and_print_position_data(data):
     try:
-        cleaned_data = data.strip('[]\n\r ')
-        parts = cleaned_data.rsplit(',', 1)
-        if len(parts) == 2:
-            time_data = float(parts[1].strip())
-            coords_data = parts[0].strip()
-            coords_parts = coords_data.split('),(')
-            if len(coords_parts) == 2:
-                rotation_data = coords_parts[0].strip('(')
-                position_data = coords_parts[1].strip(')')
-                rot_coords = [float(c.strip()) for c in rotation_data.split(',')]
-                pos_coords = [float(c.strip()) for c in position_data.split(',')]
-                if len(rot_coords) == 3 and len(pos_coords) == 3:
-                    print(f"[Konum] Pos: {pos_coords} | Rot: {rot_coords} | Zaman: {time_data:.3f}")
+        cleaned = data.strip('[]\n\r ')
+        parts = cleaned.rsplit(',', 1)
+        if len(parts) != 2:
+            return
+        time_data = float(parts[1].strip())
+        coords = parts[0].strip()
+        rot_part, pos_part = coords.split('),(')
+        rot_vals = [float(x) for x in rot_part.strip('(').split(',')]
+        pos_vals = [float(x) for x in pos_part.strip(')').split(',')]
+        if len(rot_vals) == 3 and len(pos_vals) == 3:
+            print(f"[OptiTrack] Pos: {pos_vals} | Rot: {rot_vals} | Time: {time_data:.3f}")
     except Exception as e:
-        print(f"[!] Ayrıştırma hatası: {e} → Veri: {data}")
+        print(f"[!] Veri ayrıştırma hatası: {e} | Data: {data}")
 
-# --- Bluetooth dinleme iş parçacığı ---
+# --- Bluetooth Dinleme Thread'i ---
 def bluetooth_listener():
-    received_buffer = ""
+    buffer = ""
     while True:
-        if ser_bt.in_waiting > 0:
-            received_bytes = ser_bt.read(ser_bt.in_waiting)
-            received_buffer += received_bytes.decode('utf-8', errors='ignore')
-            while '\n' in received_buffer:
-                line, received_buffer = received_buffer.split('\n', 1)
+        if bt_serial.in_waiting > 0:
+            bytes_in = bt_serial.read(bt_serial.in_waiting)
+            buffer += bytes_in.decode('utf-8', errors='ignore')
+            while '\n' in buffer:
+                line, buffer = buffer.split('\n', 1)
                 if line.strip():
                     process_and_print_position_data(line.strip())
         time.sleep(0.01)
 
-# --- Arduino’ya komut gönder ---
-def send_command(command):
+# --- Komut Gönder ---
+def send_command(cmd):
     if arduino and arduino.is_open:
         try:
-            arduino.write((command + "\n").encode('utf-8'))
+            arduino.write((cmd + '\n').encode('utf-8'))
         except serial.SerialException as e:
-            print(f"[X] Seri yazma hatası: {e}")
+            print(f"[X] Serial write error: {e}")
 
-# --- Joystick ile kontrol döngüsü ---
+# --- Manuel Sürüş Döngüsü ---
 def control_loop():
     global last_throttle, last_steering
-
     try:
         pygame.init()
         pygame.joystick.init()
-        joystick = pygame.joystick.Joystick(JOYSTICK_ID)
-        joystick.init()
-        print(f"[✓] Kontrolcü: {joystick.get_name()}")
+        js = pygame.joystick.Joystick(JOYSTICK_ID)
+        js.init()
+        print(f"[✓] Kontrolcü: {js.get_name()}")
     except pygame.error as e:
         print(f"[X] Kontrolcü bulunamadı: {e}")
         sys.exit(1)
 
     while True:
         pygame.event.pump()
-
-        forward_axis = (joystick.get_axis(2) + 1) / 2
-        reverse_axis = (joystick.get_axis(5) + 1) / 2
-        current_throttle = 1500
-
-        if reverse_axis > 0.05 and reverse_axis > forward_axis:
-            current_throttle = int(1500 - reverse_axis * 500)
-        elif forward_axis > 0.05:
-            current_throttle = int(1500 + forward_axis * 500)
-
-        steer_axis = joystick.get_axis(3)
-        current_steering = 'c'
-        if steer_axis > 0.3:
-            current_steering = 'r'
-        elif steer_axis < -0.3:
-            current_steering = 'l'
-
-        if abs(current_throttle - last_throttle) > 5:
-            send_command(f"t{current_throttle}")
-            last_throttle = current_throttle
-
-        if current_steering != last_steering:
-            send_command(f"s{current_steering}")
-            last_steering = current_steering
-
+        # Throttle
+        fw = (js.get_axis(2) + 1) / 2
+        re = (js.get_axis(5) + 1) / 2
+        throttle = 1500
+        if re > 0.05 and re > fw:
+            throttle = int(1500 - re * 500)
+        elif fw > 0.05:
+            throttle = int(1500 + fw * 500)
+        if abs(throttle - last_throttle) > 5:
+            send_command(f"t{throttle}")
+            last_throttle = throttle
+        # Steering
+        steer = js.get_axis(3)
+        steering_cmd = 'c'
+        if steer > 0.3:
+            steering_cmd = 'r'
+        elif steer < -0.3:
+            steering_cmd = 'l'
+        if steering_cmd != last_steering:
+            send_command(f"s{steering_cmd}")
+            last_steering = steering_cmd
         time.sleep(LOOP_DELAY)
 
-# === MAIN ===
-if __name__ == "__main__":
+# === Program Başlangıcı ===
+if __name__ == '__main__':
     setup_arduino()
     setup_bluetooth()
-
+    # Arduino kontrol döngüsü ile OptiTrack dinlemesini paralel başlat
     threading.Thread(target=bluetooth_listener, daemon=True).start()
     control_loop()
