@@ -1,3 +1,4 @@
+# Gerekli kütüphaneleri içe aktarıyoruz
 import pygame
 import serial
 import time
@@ -85,15 +86,30 @@ def send_arduino_command(command):
         except serial.SerialException as e:
             print(f"Seri yazma hatası (Arduino): {e}")
 
+def sanitize_serial_data(data):
+    """
+    Gelen seri verisini sadece geçerli karakterleri (sayılar, virgüller,
+    parantezler, noktalar, köşeli parantez) içerecek şekilde temizler.
+    Bu, bozuk veya yazdırılamayan karakterlerden kaynaklanan
+    ayrıştırma hatalarını önlemeye yardımcı olur.
+    """
+    # ast.literal_eval için geçerli olabilecek karakterleri tanımla
+    valid_chars = "0123456789.-(), []"
+    cleaned_data = "".join(c for c in data if c in valid_chars)
+    return cleaned_data
+
 def process_optitrack_data(data):
     """
     Gelen OptiTrack verisini Python literal olarak ayrıştırır ve ekrana yazdırır.
     Beklenen format: ( (rot_x,y,z), (pos_x,y,z), current_time )
     """
+    # Gelen veriyi, `ast.literal_eval`'in hata vermesini engellemek için temizle
+    sanitized_data = sanitize_serial_data(data)
+    
     try:
         # Gelen string'i doğrudan Python literal olarak değerlendiriyoruz.
         # ast.literal_eval, string'i güvenli bir şekilde Python veri yapısına dönüştürür.
-        parsed_data = ast.literal_eval(data.strip()) # Baştaki/sondaki boşlukları temizle
+        parsed_data = ast.literal_eval(sanitized_data.strip())
         
         # Gelen formatın bir tuple (rotasyon, konum, zaman) olduğunu varsayıyoruz
         if isinstance(parsed_data, tuple) and len(parsed_data) == 3:
@@ -122,11 +138,12 @@ def process_optitrack_data(data):
                 print(f"UYARI: Zaman verisi hatalı formatta: {current_time}")
 
         else:
-            print(f"UYARI: Gelen veri beklenmedik bir Python literal formatında. Veri: {data}")
+            print(f"UYARI: Gelen veri beklenmedik bir Python literal formatında. Veri: {sanitized_data}")
 
     except (ValueError, SyntaxError, IndexError) as e:
         # ast.literal_eval'den veya ayrıştırma sırasında gelebilecek hataları yakala
-        print(f"HATA: OptiTrack veri dönüştürme/ayrıştırma hatası. Geçersiz format: '{data}'. Hata: {e}")
+        # Hata mesajında hem orijinal hem de temizlenmiş veriyi gösteriyoruz
+        print(f"HATA: OptiTrack veri dönüştürme/ayrıştırma hatası. Geçersiz format: '{sanitized_data}'. Orijinal Veri: '{data}'. Hata: {e}")
 
 
 # --- Ana Program Akışı ---
