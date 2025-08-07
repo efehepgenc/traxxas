@@ -3,6 +3,7 @@ import serial
 import time
 import sys
 import threading
+import re  # For filtering non-printable characters
 
 # --- AYARLAR ---
 ARDUINO_PORT = '/dev/ttyACM0'
@@ -51,6 +52,8 @@ def process_and_print_position_data(data):
             return
         time_data = float(parts[1].strip())
         coords = parts[0].strip()
+        if '),(' not in coords:
+            return
         rot_part, pos_part = coords.split('),(')
         rot_vals = [float(x) for x in rot_part.strip('(').split(',')]
         pos_vals = [float(x) for x in pos_part.strip(')').split(',')]
@@ -63,13 +66,16 @@ def process_and_print_position_data(data):
 def bluetooth_listener():
     buffer = ""
     while True:
-        if bt_serial.in_waiting > 0:
-            bytes_in = bt_serial.read(bt_serial.in_waiting)
-            buffer += bytes_in.decode('utf-8', errors='ignore')
+        if bt_serial and bt_serial.in_waiting > 0:
+            data = bt_serial.read(bt_serial.in_waiting)
+            text = data.decode('utf-8', errors='ignore')
+            buffer += text
             while '\n' in buffer:
                 line, buffer = buffer.split('\n', 1)
-                if line.strip():
-                    process_and_print_position_data(line.strip())
+                raw = line.strip()
+                filtered = re.sub(r'[^0-9\.\,()\-\s]', '', raw)
+                if '(' in filtered and ')' in filtered and ',' in filtered:
+                    process_and_print_position_data(filtered)
         time.sleep(0.01)
 
 # --- Komut Gönder ---
@@ -95,7 +101,6 @@ def control_loop():
 
     while True:
         pygame.event.pump()
-        # Throttle
         fw = (js.get_axis(2) + 1) / 2
         re = (js.get_axis(5) + 1) / 2
         throttle = 1500
@@ -106,7 +111,6 @@ def control_loop():
         if abs(throttle - last_throttle) > 5:
             send_command(f"t{throttle}")
             last_throttle = throttle
-        # Steering
         steer = js.get_axis(3)
         steering_cmd = 'c'
         if steer > 0.3:
@@ -122,6 +126,23 @@ def control_loop():
 if __name__ == '__main__':
     setup_arduino()
     setup_bluetooth()
-    # Arduino kontrol döngüsü ile OptiTrack dinlemesini paralel başlat
-    threading.Thread(target=bluetooth_listener, daemon=True).start()
-    control_loop()
+    # İki eylemi paralel başlat
+    t1 = threading.Thread(target=bluetooth_listener, daemon=True)
+    t2 = threading.Thread(target=control_loop, daemon=True)
+    t1.start()
+    t2.start()
+    # Ana thread uykuya geçsin
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nProgram sonlandırılıyor...")
+        send_command("t1500")
+        send_command("sc")
+        if arduino and arduino.is_open:
+            arduino.close()
+        if bt_serial and bt_serial.is_open:
+            bt_serial.close()
+        pygame.quit()
+        print("Bağlantılar kapatıldı. Güle güle!")
+        sys.exit(0)
