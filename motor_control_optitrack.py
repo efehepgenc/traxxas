@@ -1,240 +1,187 @@
-# Gerekli kütüphaneleri içe aktarıyoruz
 import pygame
 import serial
 import time
 import sys
+import re  # Veri temizleme için
 import ast # Python literal string'lerini güvenli bir şekilde değerlendirmek için
 
-# --- GENEL AYARLAR ---
-JOYSTICK_ID = 0          # Genellikle 0'dır, takılı kontrolcünüzün ID'si
-LOOP_DELAY = 0.05        # Ana döngü gecikmesi (saniyede 20 güncelleme için 0.05)
+# --- AYARLAR ---
+ARDUINO_PORT = '/dev/ttyACM0'
+ARDUINO_BAUD = 9600
+BT_PORT = '/dev/serial0'
+BT_BAUD = 38400
+LOOP_DELAY = 0.02  # Ana döngü gecikmesi (daha hızlı)
+JOYSTICK_ID = 0
 
-# --- ARDUINO SERİ HABERLEŞME AYARLARI (Manuel Kontrol) ---
-# Rover motorlarını kontrol eden Arduino'nun bağlı olduğu seri port
-SERIAL_PORT_ARDUINO = '/dev/ttyACM0'  
-BAUD_RATE_ARDUINO = 9600              # Arduino kodunuzdaki baud rate ile aynı olmalı
-arduino_ser = None # Arduino seri bağlantı nesnesi
+# --- Global değişkenler ---
+arduino = None
+bt_serial = None
+last_throttle = 1500
+last_steering = 'c'
+# Gelen veriyi satır satır işlemek için tampon
+bt_buffer = ""
 
-# --- OPTITRACK SERİ HABERLEŞME AYARLARI (Veri Okuma) ---
-# GPIO 14/15'e bağlı HC-05 modülünün seri portu (OptiTrack verisi için)
-SERIAL_PORT_OPTITRACK = '/dev/serial0' 
-BAUD_RATE_OPTITRACK = 38400            # OptiTrack göndericisindeki baud rate ile aynı olmalı
-optitrack_ser = None # OptiTrack seri bağlantı nesnesi
-
-# --- Joystick Nesnesi ---
-joystick = None
-
-def setup_all_connections():
-    """
-    Tüm gerekli bağlantıları (Arduino, OptiTrack seri portu ve Joystick) kurar.
-    Herhangi bir bağlantı başarısız olursa False döner.
-    """
-    global arduino_ser, optitrack_ser, joystick
-    
-    # 1. Arduino Seri Bağlantısı Kurulumu
-    print(f"Bilgi: Arduino'ya {SERIAL_PORT_ARDUINO} portundan bağlanılıyor...")
+# --- Arduino Bağlantısı ---
+def setup_arduino():
+    global arduino
     try:
-        arduino_ser = serial.Serial(SERIAL_PORT_ARDUINO, BAUD_RATE_ARDUINO, timeout=1)
-        time.sleep(2) # Arduino'nun başlatılması için kısa bir gecikme
-        arduino_ser.reset_input_buffer() # Gelen tamponu temizle
-        print(f"Başarılı: Arduino'ya {SERIAL_PORT_ARDUINO} portundan bağlanıldı.")
+        arduino = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=1)
+        time.sleep(2)
+        arduino.reset_input_buffer()
+        print(f"[✓] Arduino bağlandı: {ARDUINO_PORT}")
     except serial.SerialException as e:
-        print(f"HATA: Arduino seri portuna bağlanılamadı: {e}")
-        print("Lütfen Arduino'nun bağlı olduğundan, port adının ve baud rate'in doğru olduğundan emin olun.")
-        return False
-        
-    # 2. OptiTrack Veri Seri Port Bağlantısı Kurulumu
-    print(f"Bilgi: OptiTrack verisi için {SERIAL_PORT_OPTITRACK} portuna bağlanılıyor...")
+        print(f"[X] Arduino bağlantı hatası: {e}")
+        sys.exit(1)
+
+# --- Bluetooth Bağlantısı (OptiTrack Verisi) ---
+def setup_bluetooth():
+    global bt_serial
     try:
-        optitrack_ser = serial.Serial(SERIAL_PORT_OPTITRACK, BAUD_RATE_OPTITRACK, timeout=0.1) 
-        time.sleep(2) # Portun açılması için kısa bir gecikme
-        optitrack_ser.reset_input_buffer() # Gelen tamponu temizle
-        print(f"Başarılı: OptiTrack seri portuna ({SERIAL_PORT_OPTITRACK}) bağlanıldı.")
+        bt_serial = serial.Serial(BT_PORT, BT_BAUD, timeout=0.1)
+        time.sleep(2)
+        bt_serial.reset_input_buffer()
+        print(f"[✓] Bluetooth bağlantısı: {BT_PORT}")
     except serial.SerialException as e:
-        print(f"HATA: OptiTrack seri portuna bağlanılamadı: {e}.")
-        print("Lütfen Raspberry Pi'nin `config.txt` dosyasındaki seri port ayarlarını (Bluetooth'u devre dışı bırakma) ve HC-05 bağlantılarını kontrol edin.")
-        return False
+        print(f"[X] Bluetooth bağlantı hatası: {e}")
+        sys.exit(1)
 
-    # 3. Pygame ve Joystick Bağlantısı Kurulumu
-    print("Bilgi: Pygame ve Joystick başlatılıyor...")
-    try:
-        pygame.init() # Pygame'i başlat
-        pygame.joystick.init() # Joystick modülünü başlat
-        if pygame.joystick.get_count() > 0: # Takılı joystick var mı kontrol et
-            joystick = pygame.joystick.Joystick(JOYSTICK_ID)
-            joystick.init() # Joystick'i başlat
-            print(f"Başarılı: Kontrolcü bulundu: {joystick.get_name()}")
-        else:
-            print("HATA: Takılı kontrolcü bulunamadı. Lütfen bir kontrolcü bağlayın ve yeniden deneyin.")
-            return False
-    except pygame.error as e:
-        print(f"HATA: Pygame veya kontrolcü başlatılamadı: {e}")
-        print("Lütfen Pygame'in doğru yüklendiğinden ve kontrolcünüzün Raspberry Pi'ye bağlı olduğundan emin olun.")
-        return False
-        
-    return True # Tüm bağlantılar başarılı
-
-def send_arduino_command(command):
+# --- Veri Temizleme ve Ayrıştırma ---
+def process_and_print_position_data(data):
     """
-    Arduino'ya komutları güvenli bir şekilde gönderir.
-    Seri bağlantı açıksa komutu yeni satır karakteriyle birlikte gönderir.
+    Gelen veriyi temizler, ayrıştırır ve ekrana yazdırır.
+    Sadece geçerli karakterleri koruyarak ayrıştırma hatalarını önler.
     """
-    if arduino_ser and arduino_ser.is_open:
-        try:
-            full_command = command + "\n"
-            arduino_ser.write(full_command.encode('utf-8'))
-        except serial.SerialException as e:
-            print(f"Seri yazma hatası (Arduino): {e}")
-
-def sanitize_serial_data(data):
-    """
-    Gelen seri verisini sadece geçerli karakterleri (sayılar, virgüller,
-    parantezler, noktalar, köşeli parantez) içerecek şekilde temizler.
-    Bu, bozuk veya yazdırılamayan karakterlerden kaynaklanan
-    ayrıştırma hatalarını önlemeye yardımcı olur.
-    """
-    # ast.literal_eval için geçerli olabilecek karakterleri tanımla
-    valid_chars = "0123456789.-(), []"
-    cleaned_data = "".join(c for c in data if c in valid_chars)
-    return cleaned_data
-
-def process_optitrack_data(data):
-    """
-    Gelen OptiTrack verisini Python literal olarak ayrıştırır ve ekrana yazdırır.
-    Beklenen format: ( (rot_x,y,z), (pos_x,y,z), current_time )
-    """
-    # Gelen veriyi, `ast.literal_eval`'in hata vermesini engellemek için temizle
-    sanitized_data = sanitize_serial_data(data)
+    global bt_buffer
     
+    # Sadece sayılar, virgül, eksi, nokta, parantez ve boşluk karakterlerini koruyan bir regex.
+    # Bu, gelen bozuk karakterleri etkili bir şekilde temizler.
+    cleaned_data = re.sub(r'[^-0-9\.,\(\)\[\]\s]', '', data)
+    
+    # Temizlenmiş veriyi doğrudan ast.literal_eval ile ayrıştırmaya çalış
     try:
-        # Gelen string'i doğrudan Python literal olarak değerlendiriyoruz.
         # ast.literal_eval, string'i güvenli bir şekilde Python veri yapısına dönüştürür.
-        parsed_data = ast.literal_eval(sanitized_data.strip())
+        # Bu yaklaşım, karmaşık veri formatlarını doğru bir şekilde işler.
+        parsed_data = ast.literal_eval(cleaned_data.strip())
         
         # Gelen formatın bir tuple (rotasyon, konum, zaman) olduğunu varsayıyoruz
         if isinstance(parsed_data, tuple) and len(parsed_data) == 3:
             rotation_tuple = parsed_data[0]
             position_tuple = parsed_data[1]
             current_time = parsed_data[2]
-
-            # Rotasyon verilerini yazdır
-            if isinstance(rotation_tuple, tuple) and len(rotation_tuple) == 3:
-                rot_x, rot_y, rot_z = rotation_tuple
-                print(f"OptiTrack Rotasyon: X={rot_x:.6f}, Y={rot_y:.6f}, Z={rot_z:.6f}")
+            
+            # Gelen verinin doğru formatta olduğunu doğrula ve yazdır
+            if isinstance(rotation_tuple, tuple) and isinstance(position_tuple, tuple) and isinstance(current_time, (int, float)):
+                print(f"[OptiTrack] Pos: {position_tuple} | Rot: {rotation_tuple} | Time: {current_time:.3f}")
             else:
-                print(f"UYARI: Rotasyon verisi hatalı formatta veya eksik: {rotation_tuple}")
-
-            # Konum verilerini yazdır
-            if isinstance(position_tuple, tuple) and len(position_tuple) == 3:
-                pos_x, pos_y, pos_z = position_tuple
-                print(f"OptiTrack Konum: X={pos_x:.6f}, Y={pos_y:.6f}, Z={pos_z:.6f}")
-            else:
-                print(f"UYARI: Konum verisi hatalı formatta veya eksik: {position_tuple}")
-
-            # Zaman verisini yazdır
-            if isinstance(current_time, (int, float)):
-                print(f"OptiTrack Zaman: {current_time:.6f}")
-            else:
-                print(f"UYARI: Zaman verisi hatalı formatta: {current_time}")
-
-        else:
-            print(f"UYARI: Gelen veri beklenmedik bir Python literal formatında. Veri: {sanitized_data}")
+                # Format beklenildiği gibi değilse uyarı ver
+                print(f"[!] Hata: Beklenmedik veri formatı. Temizlenmiş veri: '{cleaned_data}'")
 
     except (ValueError, SyntaxError, IndexError) as e:
-        # ast.literal_eval'den veya ayrıştırma sırasında gelebilecek hataları yakala
-        # Hata mesajında hem orijinal hem de temizlenmiş veriyi gösteriyoruz
-        print(f"HATA: OptiTrack veri dönüştürme/ayrıştırma hatası. Geçersiz format: '{sanitized_data}'. Orijinal Veri: '{data}'. Hata: {e}")
+        # Ayrıştırma hatası oluşursa, hem orijinal hem de temizlenmiş veriyi göster
+        print(f"[!] Veri ayrıştırma hatası: {e} | Orijinal Data: '{data}' | Temizlenmiş Data: '{cleaned_data}'")
 
 
-# --- Ana Program Akışı ---
-if __name__ == "__main__":
-    # Tüm bağlantıları kurmaya çalış, başarısız olursa programdan çık
-    if not setup_all_connections():
+# --- Bluetooth Veri Oku ---
+def read_bluetooth_data():
+    """
+    Bluetooth'tan gelen veriyi okur ve tamponlar.
+    Tamamlanmış satırları (newline karakteri ile biten) işler.
+    """
+    global bt_serial, bt_buffer
+    if not bt_serial or not bt_serial.is_open:
+        return
+    
+    try:
+        if bt_serial.in_waiting > 0:
+            received_bytes = bt_serial.read(bt_serial.in_waiting)
+            bt_buffer += received_bytes.decode('utf-8', errors='ignore')
+            
+            # Tamamlanmış bir satır varsa işleme al
+            while '\n' in bt_buffer:
+                line, bt_buffer = bt_buffer.split('\n', 1)
+                line = line.strip()
+                if line:
+                    process_and_print_position_data(line)
+                    
+    except serial.SerialException:
+        bt_serial.reset_input_buffer()
+        print("[!] Seri port okuma hatası, tampon sıfırlandı.")
+    except Exception as e:
+        print(f"[!] Genel hata oluştu: {e}")
+
+# --- Komut Gönder ---
+def send_command(cmd):
+    if arduino and arduino.is_open:
+        try:
+            arduino.write((cmd + '\n').encode('utf-8'))
+        except serial.SerialException:
+            pass
+
+# --- Ana Döngü (Joystick + Bluetooth) ---
+def main_loop():
+    global last_throttle, last_steering
+    try:
+        pygame.init()
+        pygame.joystick.init()
+        if pygame.joystick.get_count() == 0:
+            raise pygame.error("No joystick found")
+        js = pygame.joystick.Joystick(JOYSTICK_ID)
+        js.init()
+        print(f"[✓] Kontrolcü: {js.get_name()}")
+    except pygame.error as e:
+        print(f"[X] Kontrolcü bulunamadı: {e}")
         sys.exit(1)
 
-    print("\nKontrol ve veri okuma döngüsü başlatıldı. Çıkmak için CTRL+C'ye basın.")
-    
-    # Joystick komutları için son gönderilen değerleri tutuyoruz
-    last_throttle = 1500
-    last_steering = 'c'
-    
-    # OptiTrack seri portundan gelen veriyi satır satır işlemek için tampon
-    optitrack_buffer = ""
-
-    try:
-        while True:
-            # 1. JOYSTICK'TEN GİRİŞLERİ OKU VE ARDUINO'YA GÖNDER
-            pygame.event.pump() # Pygame olay kuyruğunu güncelle
-            
-            # Gaz (Throttle) Kontrolü (F710 Eksen Haritası)
-            # Sağ Tetik (Axis 2) ve Sol Tetik (Axis 5) değerlerini 0-1 aralığına dönüştür
-            forward_axis = (joystick.get_axis(2) + 1) / 2 
-            reverse_axis = (joystick.get_axis(5) + 1) / 2 
-            current_throttle = 1500 # Varsayılan olarak nötr (motor durur)
-
-            # Geri vites (sol tetik) ileri vitesten (sağ tetik) daha baskınsa geri git
-            if reverse_axis > 0.05 and reverse_axis > forward_axis:
-                current_throttle = int(1500 - reverse_axis * 500) # 1000 (tam geri) - 1500 (nötr)
-            # İleri vites (sağ tetik) aktifse ileri git
-            elif forward_axis > 0.05:
-                current_throttle = int(1500 + forward_axis * 500) # 1500 (nötr) - 2000 (tam ileri)
-            
-            # Direksiyon (Steering) Kontrolü (F710 Eksen Haritası)
-            # Sağ Analog Çubuk (Yatay Eksen - Axis 3)
-            steer_axis = joystick.get_axis(3) 
-            current_steering = last_steering # Varsayılan olarak son direksiyon konumu
-
-            if steer_axis > 0.3: # Belirgin bir şekilde sağa dön
-                current_steering = 'r'
-            elif steer_axis < -0.3: # Belirgin bir şekilde sola dön
-                current_steering = 'l'
-            else: # Merkezde
-                current_steering = 'c'
-            
-            # --- Komutları Arduino'ya Gönderme ---
-            # Sadece değerler değiştiyse komut göndererek seri portu gereksiz yere meşgul etmiyoruz.
-            # abs() ile küçük titreşimleri (deadzone) görmezden geliyoruz.
-            if abs(current_throttle - last_throttle) > 5: # Gaz değerinde yeterli değişiklik varsa
-                send_arduino_command(f"t{current_throttle}")
-                last_throttle = current_throttle
-
-            if current_steering != last_steering: # Direksiyon değeri değiştiyse
-                send_arduino_command(f"s{current_steering}")
-                last_steering = current_steering
-
-            # 2. OPTITRACK SERİ PORTUNDAN VERİ OKU VE İŞLE
-            if optitrack_ser.in_waiting > 0: # Seri portta okunacak veri varsa
-                received_bytes = optitrack_ser.read(optitrack_ser.in_waiting) # Gelen tüm baytları oku
-                optitrack_buffer += received_bytes.decode('utf-8', errors='ignore') # Tampona ekle
-
-                # Tamponda tamamlanmış bir satır (yeni satır karakteri '\n' ile biten) varsa işle
-                while '\n' in optitrack_buffer:
-                    line, optitrack_buffer = optitrack_buffer.split('\n', 1) # İlk satırı al ve tamponu güncelle
-                    line = line.strip() 
-                    if line: # Boş satırları atla
-                        process_optitrack_data(line) # Gelen OptiTrack verisini işle ve yazdır
-            
-            # --- DÖNGÜYÜ YAVAŞLATMA ---
-            time.sleep(LOOP_DELAY) # CPU kullanımını düşürmek için kısa bir bekleme
-
-    except KeyboardInterrupt:
-        print("\nProgram sonlandırılıyor. Bağlantılar kapatılıyor.")
-    finally:
-        # Program sonlandığında tüm bağlantıları kapat ve araçları güvenle durdur
-        print("Son komutlar gönderiliyor (araç durduruluyor)...")
-        send_arduino_command("t1500") # Motoru nötr konuma getir
-        send_arduino_command("sc")    # Direksiyonu ortaya al
+    while True:
+        pygame.event.pump()
         
-        # Arduino seri portunu kapat
-        if arduino_ser and arduino_ser.is_open:
-            arduino_ser.close()
-            print("Arduino seri portu kapatıldı.")
+        # Throttle hesapla (F710 eksen haritası)
+        fw = (js.get_axis(2) + 1) / 2
+        rv = (js.get_axis(5) + 1) / 2
+        throttle = 1500
+        if rv > 0.05 and rv > fw:
+            throttle = int(1500 - rv * 500)
+        elif fw > 0.05:
+            throttle = int(1500 + fw * 500)
+        
+        if abs(throttle - last_throttle) > 5:
+            send_command(f"t{throttle}")
+            last_throttle = throttle
             
-        # OptiTrack seri portunu kapat
-        if optitrack_ser and optitrack_ser.is_open:
-            optitrack_ser.close()
-            print("OptiTrack seri portu kapatıldı.")
+        # Steering hesapla (F710 eksen haritası)
+        sv = js.get_axis(3)
+        steer_cmd = 'c'
+        if sv > 0.3:
+            steer_cmd = 'r'
+        elif sv < -0.3:
+            steer_cmd = 'l'
             
-        pygame.quit() # Pygame'i kapat
-        print("Tüm bağlantılar kapatıldı. Güle güle!")
+        if steer_cmd != last_steering:
+            send_command(f"s{steer_cmd}")
+            last_steering = steer_cmd
+            
+        # Bluetooth verisini oku ve işle
+        read_bluetooth_data()
+        
+        time.sleep(LOOP_DELAY)
+
+# === Program Başlangıcı ===
+if __name__ == '__main__':
+    setup_arduino()
+    setup_bluetooth()
+    print("Başlatıldı: Motor kontrol ve OptiTrack veri okuma aynı döngüde.")
+    try:
+        main_loop()
+    except KeyboardInterrupt:
+        print("\n[!] Program durduruldu. Bağlantılar kapatılıyor...")
+    finally:
+        send_command("t1500")
+        send_command("sc")
+        if arduino and arduino.is_open:
+            arduino.close()
+        if bt_serial and bt_serial.is_open:
+            bt_serial.close()
+        pygame.quit()
+        print("[✓] Program güvenli bir şekilde sonlandırıldı.")
         sys.exit(0)
+
