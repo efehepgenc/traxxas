@@ -2,131 +2,139 @@ import pygame
 import serial
 import time
 import sys
-import re
+import re  # For filtering non-printable characters
 
 # --- AYARLAR ---
 ARDUINO_PORT = '/dev/ttyACM0'
 ARDUINO_BAUD = 9600
 BT_PORT = '/dev/serial0'
 BT_BAUD = 38400
-LOOP_DELAY = 0.02  # Döngü gecikmesi
+LOOP_DELAY = 0.02  # Faster loop
 JOYSTICK_ID = 0
 
-# --- Seri bağlantılar ---
+# --- Global değişkenler ---
 arduino = None
 bt_serial = None
-
-# --- Son durumlar ---
 last_throttle = 1500
 last_steering = 'c'
-bt_buffer = ''  # Gelen bluetooth verisi tamponu
 
-# --- Regex kalıbı ---
-# (rotX,rotY,rotZ),(posX,posY,posZ),time
-pattern = re.compile(r'''^\(\s*([-+]?\d*\.\d+),\s*([-+]?\d*\.\d+),\s*([-+]?\d*\.\d+)\)\s*,\s*\(\s*([-+]?\d*\.\d+),\s*([-+]?\d*\.\d+),\s*([-+]?\d*\.\d+)\)\s*,\s*([-+]?\d*\.\d+)$''')
-
-# --- Arduino bağlantısı ---
+# --- Arduino Bağlantısı ---
 def setup_arduino():
     global arduino
     try:
         arduino = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=1)
         time.sleep(2)
         arduino.reset_input_buffer()
-        print(f"[✓] Arduino: {ARDUINO_PORT}")
-    except Exception as e:
+        print(f"[✓] Arduino bağlandı: {ARDUINO_PORT}")
+    except serial.SerialException as e:
         print(f"[X] Arduino bağlantı hatası: {e}")
         sys.exit(1)
 
-# --- Bluetooth bağlantısı ---
+# --- Bluetooth Bağlantısı (OptiTrack Verisi) ---
 def setup_bluetooth():
     global bt_serial
     try:
         bt_serial = serial.Serial(BT_PORT, BT_BAUD, timeout=0.1)
         time.sleep(2)
         bt_serial.reset_input_buffer()
-        print(f"[✓] Bluetooth: {BT_PORT}")
-    except Exception as e:
+        print(f"[✓] Bluetooth bağlantısı: {BT_PORT}")
+    except serial.SerialException as e:
         print(f"[X] Bluetooth bağlantı hatası: {e}")
         sys.exit(1)
 
-# --- Bluetooth verisi okuma ve işleme ---
-def read_bluetooth_data():
-    global bt_buffer
+# --- Gelen Veriyi Ayrıştır ve Yazdır ---
+def process_and_print_position_data(data):
     try:
-        if bt_serial.in_waiting > 0:
-            data = bt_serial.read(bt_serial.in_waiting)
-            text = data.decode('utf-8', errors='ignore')
-            bt_buffer += text
-        # Tamamlanmış satırları işle
-        lines = bt_buffer.split('\n')
-        bt_buffer = lines[-1]  # Son parça, eksik veri
-        for line in lines[:-1]:
+        cleaned = data.strip('[]\n\r ')
+        parts = cleaned.rsplit(',', 1)
+        if len(parts) != 2:
+            return
+        time_data = float(parts[1].strip())
+        coords = parts[0].strip()
+        if '),(' not in coords:
+            return
+        rot_part, pos_part = coords.split('),(')
+        rot_vals = [float(x) for x in rot_part.strip('(').split(',')]
+        pos_vals = [float(x) for x in pos_part.strip(')').split(',')]
+        if len(rot_vals) == 3 and len(pos_vals) == 3:
+            print(f"[OptiTrack] Pos: {pos_vals} | Rot: {rot_vals} | Time: {time_data:.3f}")
+    except Exception as e:
+        # Ignore parse errors
+        pass
+
+# --- Bluetooth Veri Oku ---
+def read_bluetooth_data():
+    if not bt_serial:
+        return
+    try:
+        count = bt_serial.in_waiting
+n        if count == 0:
+            return
+        raw_bytes = bt_serial.read(count)
+        text = raw_bytes.decode('utf-8', errors='ignore')
+        for line in text.split('\n'):
             raw = line.strip()
             if not raw:
                 continue
-            m = pattern.match(raw)
-            if m:
-                rot = list(map(float, m.group(1,2,3)))
-                pos = list(map(float, m.group(4,5,6)))
-                t   = float(m.group(7))
-                print(f"[OptiTrack] Pos: {pos} | Rot: {rot} | Time: {t:.3f}")
-            # Hatalı satırları yoksay
+            # Filter noise
+            filtered = re.sub(r'[^0-9\.\,()\-\s]', '', raw)
+            if '(' in filtered and ')' in filtered and ',' in filtered:
+                process_and_print_position_data(filtered)
     except Exception:
-        # Bulanık veri durumunda tamponu temizle
-        bt_buffer = ''
+        bt_serial.reset_input_buffer()
 
-# --- Arduino'ya komut gönderme ---
+# --- Komut Gönder ---
 def send_command(cmd):
     if arduino and arduino.is_open:
         try:
-            arduino.write((cmd + '\n').encode())
-        except:
+            arduino.write((cmd + '\n').encode('utf-8'))
+        except serial.SerialException:
             pass
 
-# --- Ana döngü: joystick + bluetooth ---
+# --- Ana Döngü (Joystick + Bluetooth) ---
 def main_loop():
     global last_throttle, last_steering
-    # Joystick başlat
     try:
         pygame.init()
         pygame.joystick.init()
         js = pygame.joystick.Joystick(JOYSTICK_ID)
         js.init()
         print(f"[✓] Kontrolcü: {js.get_name()}")
-    except:
+    except pygame.error:
         print("[X] Kontrolcü bulunamadı")
         sys.exit(1)
-    # Döngü
+
     while True:
         pygame.event.pump()
-        # Throttle hesabi
+        # Throttle hesapla
         fw = (js.get_axis(2) + 1) / 2
         rv = (js.get_axis(5) + 1) / 2
-        thr = 1500
+        throttle = 1500
         if rv > 0.05 and rv > fw:
-            thr = int(1500 - rv * 500)
+            throttle = int(1500 - rv * 500)
         elif fw > 0.05:
-            thr = int(1500 + fw * 500)
-        if abs(thr - last_throttle) > 5:
-            send_command(f"t{thr}")
-            last_throttle = thr
-        # Steering hesabi
+            throttle = int(1500 + fw * 500)
+        if abs(throttle - last_throttle) > 5:
+            send_command(f"t{throttle}")
+            last_throttle = throttle
+        # Steering hesapla
         sv = js.get_axis(3)
-        cmd = 'c'
+        steer_cmd = 'c'
         if sv > 0.3:
-            cmd = 'r'
+            steer_cmd = 'r'
         elif sv < -0.3:
-            cmd = 'l'
-        if cmd != last_steering:
-            send_command(f"s{cmd}")
-            last_steering = cmd
-        # Bluetooth oku
+            steer_cmd = 'l'
+        if steer_cmd != last_steering:
+            send_command(f"s{steer_cmd}")
+            last_steering = steer_cmd
+        # Bluetooth verisini oku
         read_bluetooth_data()
+        # Döngüyü yavaşlat
         time.sleep(LOOP_DELAY)
 
-# --- Program Start ---
+# === Program Başlangıcı ===
 if __name__ == '__main__':
     setup_arduino()
     setup_bluetooth()
-    print("Başlatıldı: hem sürüş hem veri okuma tek döngüde.")
+    print("Başlatıldı: Motor kontrol ve OptiTrack veri okuma aynı döngüde.")
     main_loop()
