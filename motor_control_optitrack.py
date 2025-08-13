@@ -25,6 +25,9 @@ last_steering = 'c'
 # BT okuma için kalıcı tampon ve yazdırma sınırlayıcı
 bt_buffer = ''
 last_print_ts = 0.0
+# Thread'lerin çalışıp çalışmadığını kontrol etmek için bayrak
+running_flag = True
+
 
 # --- Arduino Bağlantısı ---
 def setup_arduino():
@@ -50,58 +53,74 @@ def setup_bluetooth():
         print(f"[X] Bluetooth bağlantı hatası: {e}")
         sys.exit(1)
 
-# --- OptiTrack verisini işle ---
-def process_and_print_position_data(line: str):
+# --- OptiTrack verisini işle (Sizin kodunuzdaki mantığa göre güncellendi) ---
+def process_and_print_position_data(data: str):
     """
-    Gelen veriyi temizler, ayrıştırır ve ekrana yazdırır.
-    Sadece geçerli karakterleri koruyarak ayrıştırma hatalarını önler.
-    ast.literal_eval, string'i güvenli bir şekilde Python veri yapısına dönüştürür.
+    Gelen [rotasyon, konum, zaman] verisini ayrıştırır ve ekrana yazdırır.
+    Sizin sağladığınız koddan alınan mantığa göre güncellenmiştir.
     """
     global last_print_ts
-
-    # Gelen veriyi sadece geçerli karakterleri koruyarak temizle
-    # Bu, 'ast.literal_eval'ın hata vermesini engellemeye yardımcı olur.
-    cleaned_data = re.sub(r'[^0-9\.\,()\-\s]', '', line)
-
+    
     try:
-        # Temizlenmiş veriyi doğrudan Python literal olarak değerlendiriyoruz
-        parsed_data = ast.literal_eval(cleaned_data.strip())
+        # Gelen string'den köşeli parantezleri ve boşlukları temizle
+        cleaned_data = data.strip('[]\n\r ')
         
-        # Gelen formatın bir tuple (rotasyon, konum, zaman) olduğunu varsayıyoruz
-        if isinstance(parsed_data, tuple) and len(parsed_data) == 3:
-            rotation_tuple = parsed_data[0]
-            position_tuple = parsed_data[1]
-            current_time = parsed_data[2]
+        # Rotasyon, konum ve zaman verilerini ayır
+        parts = cleaned_data.rsplit(',', 1)
+        
+        if len(parts) == 2:
+            time_data_str = parts[1].strip()
+            # Zaman verisini float'a çevirme hatasını yakalamak için try/except bloğu
+            try:
+                time_data = float(time_data_str)
+            except ValueError:
+                print(f"HATA: Zaman değeri float'a çevrilemedi. Veri: {data}")
+                return
+
+            coords_data = parts[0].strip()
             
-            # Gelen verinin doğru formatta olduğunu doğrula ve ekrana yazdır
-            if isinstance(rotation_tuple, tuple) and isinstance(position_tuple, tuple) and isinstance(current_time, (int, float)):
-                now = time.time()
-                if now - last_print_ts >= (1.0 / PRINT_MAX_HZ):
-                    print(f"[OptiTrack] Pos: {list(position_tuple)} | Rot: {list(rotation_tuple)} | Time: {current_time:.3f}")
-                    last_print_ts = now
+            coords_parts = coords_data.split('),(')
+
+            if len(coords_parts) == 2:
+                rotation_data = coords_parts[0].strip('(')
+                position_data = coords_parts[1].strip(')')
+                
+                rot_coords = [float(c.strip()) for c in rotation_data.split(',')]
+                pos_coords = [float(c.strip()) for c in position_data.split(',')]
+                
+                if len(rot_coords) == 3 and len(pos_coords) == 3:
+                    now = time.time()
+                    if now - last_print_ts >= (1.0 / PRINT_MAX_HZ):
+                        print(f"[OptiTrack] Rotasyon: {rot_coords}, Konum: {pos_coords}, Zaman: {time_data:.6f}")
+                        last_print_ts = now
+                else:
+                    print(f"UYARI: Ayrıştırma hatası. Koordinatlar eksik. Veri: {data}")
             else:
-                # Format beklenildiği gibi değilse uyarı ver
-                print(f"[!] Hata: Beklenmedik veri formatı. Temizlenmiş veri: '{cleaned_data}'")
-        
-    except (ValueError, SyntaxError, IndexError) as e:
-        # Ayrıştırma hatası oluşursa, hem orijinal hem de temizlenmiş veriyi göster
-        print(f"[!] Veri ayrıştırma hatası: {e} | Orijinal Data: '{line}' | Temizlenmiş Data: '{cleaned_data}'")
+                print(f"UYARI: Konum verisi ayrıştırma hatası. Beklenmedik format: {data}")
+        else:
+            print(f"UYARI: Ayrıştırma hatası. Zaman değeri eksik. Beklenmedik format: {data}")
+
+    except (ValueError, IndexError) as e:
+        print(f"HATA: Veri dönüştürme veya ayrıştırma hatası. Geçersiz format: {data}. Hata: {e}")
 
 
 # --- Bluetooth okuma thread'i ---
 def bluetooth_reader():
     global bt_buffer
-    while True:
+    print("[+] Bluetooth okuma thread'i basladi.")
+    while running_flag: # Programın sonlandığını kontrol et
         try:
             if bt_serial is None:
                 time.sleep(BT_READ_SLEEP)
                 continue
+            
             available = bt_serial.in_waiting
             if available:
                 chunk = bt_serial.read(available)
                 text = chunk.decode('utf-8', errors='ignore')
                 bt_buffer += text
                 
+            # Tampondaki veriyi satır satır ayır ve işle
             if '\n' in bt_buffer:
                 lines = bt_buffer.split('\n')
                 bt_buffer = lines[-1]
@@ -110,15 +129,21 @@ def bluetooth_reader():
                     if not s:
                         continue
                     process_and_print_position_data(s)
-        except serial.SerialException:
+            
+        except serial.SerialException as e:
+            print(f"[!] Seri port hatasi (BT): {e}. Tampon sifirlandi.")
             bt_buffer = ''
             try:
                 bt_serial.reset_input_buffer()
             except Exception:
                 pass
-        except Exception:
-            pass
+        except Exception as e:
+            # Geniş kapsamlı hata yakalama, ancak ne olduğunu yazdır
+            print(f"[!] Bluetooth okuma thread'inde beklenmedik bir hata olustu: {e}")
+        
         time.sleep(BT_READ_SLEEP)
+    print("[-] Bluetooth okuma thread'i sonlandirildi.")
+
 
 # --- Arduino'ya komut gönder ---
 def send_command(cmd: str):
@@ -131,20 +156,25 @@ def send_command(cmd: str):
 # --- Joystick kontrol thread'i ---
 def joystick_control():
     global last_throttle, last_steering
+    print("[+] Joystick kontrol thread'i basladi.")
     try:
         pygame.init()
         pygame.joystick.init()
+        if pygame.joystick.get_count() == 0:
+            raise pygame.error("Kontrolcü bulunamadı")
         js = pygame.joystick.Joystick(JOYSTICK_ID)
         js.init()
         print(f"[✓] Kontrolcü: {js.get_name()}")
-    except pygame.error:
-        print("[X] Kontrolcü bulunamadı")
-        sys.exit(1)
+    except pygame.error as e:
+        print(f"[X] Kontrolcü hatasi: {e}")
+        global running_flag
+        running_flag = False # Hata durumunda tüm thread'leri durdur
+        return
 
     period = 1.0 / JOY_LOOP_HZ
     next_ts = time.time()
 
-    while True:
+    while running_flag: # Programın sonlandığını kontrol et
         pygame.event.pump()
 
         # Throttle
@@ -176,8 +206,9 @@ def joystick_control():
         if sleep_for > 0:
             time.sleep(sleep_for)
         else:
-            # Fazla geciktiysek bir sonraki adıma geç
             next_ts = time.time()
+    print("[-] Joystick kontrol thread'i sonlandirildi.")
+
 
 # === Program Başlangıcı ===
 if __name__ == '__main__':
@@ -191,10 +222,15 @@ if __name__ == '__main__':
     t_js.start()
 
     try:
-        while True:
+        while running_flag:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nKapatiliyor...")
+        print("\nKlavye kesmesi algılandı. Program güvenli bir şekilde kapatılıyor...")
+    finally:
+        # Tüm thread'lerin sonlandığını belirtmek için bayrağı değiştir
+        running_flag = False
+        # Bir süre bekle ki thread'ler düzgünce kapanabilsin
+        time.sleep(2)
         send_command("t1500")
         send_command("sc")
         try:
@@ -202,10 +238,9 @@ if __name__ == '__main__':
                 arduino.close()
             if bt_serial and bt_serial.is_open:
                 bt_serial.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[!] Kapatma sirasinda bir hata olustu: {e}")
         pygame.quit()
         print("Gule gule!")
         sys.exit(0)
-
 
