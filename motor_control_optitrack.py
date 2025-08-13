@@ -4,6 +4,7 @@ import time
 import sys
 import threading
 import re
+import ast # Python literal string'lerini güvenli bir şekilde değerlendirmek için
 
 # --- AYARLAR ---
 ARDUINO_PORT = '/dev/ttyACM0'
@@ -24,9 +25,6 @@ last_steering = 'c'
 # BT okuma için kalıcı tampon ve yazdırma sınırlayıcı
 bt_buffer = ''
 last_print_ts = 0.0
-
-# OptiTrack satırı (rot, pos, time) regex (float'ları yakalar)
-pattern = re.compile(r'^\(\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*\)\s*,\s*\(\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*\)\s*,\s*([-+]?\d*\.?\d+)\s*$')
 
 # --- Arduino Bağlantısı ---
 def setup_arduino():
@@ -54,18 +52,41 @@ def setup_bluetooth():
 
 # --- OptiTrack verisini işle ---
 def process_and_print_position_data(line: str):
+    """
+    Gelen veriyi temizler, ayrıştırır ve ekrana yazdırır.
+    Sadece geçerli karakterleri koruyarak ayrıştırma hatalarını önler.
+    ast.literal_eval, string'i güvenli bir şekilde Python veri yapısına dönüştürür.
+    """
     global last_print_ts
-    m = pattern.match(line)
-    if not m:
-        return  # bozuk satırı atla
-    rot = list(map(float, m.group(1, 2, 3)))
-    pos = list(map(float, m.group(4, 5, 6)))
-    t = float(m.group(7))
 
-    now = time.time()
-    if now - last_print_ts >= (1.0 / PRINT_MAX_HZ):
-        print(f"[OptiTrack] Pos: {pos} | Rot: {rot} | Time: {t:.3f}")
-        last_print_ts = now
+    # Gelen veriyi sadece geçerli karakterleri koruyarak temizle
+    # Bu, 'ast.literal_eval'ın hata vermesini engellemeye yardımcı olur.
+    cleaned_data = re.sub(r'[^0-9\.\,()\-\s]', '', line)
+
+    try:
+        # Temizlenmiş veriyi doğrudan Python literal olarak değerlendiriyoruz
+        parsed_data = ast.literal_eval(cleaned_data.strip())
+        
+        # Gelen formatın bir tuple (rotasyon, konum, zaman) olduğunu varsayıyoruz
+        if isinstance(parsed_data, tuple) and len(parsed_data) == 3:
+            rotation_tuple = parsed_data[0]
+            position_tuple = parsed_data[1]
+            current_time = parsed_data[2]
+            
+            # Gelen verinin doğru formatta olduğunu doğrula ve ekrana yazdır
+            if isinstance(rotation_tuple, tuple) and isinstance(position_tuple, tuple) and isinstance(current_time, (int, float)):
+                now = time.time()
+                if now - last_print_ts >= (1.0 / PRINT_MAX_HZ):
+                    print(f"[OptiTrack] Pos: {list(position_tuple)} | Rot: {list(rotation_tuple)} | Time: {current_time:.3f}")
+                    last_print_ts = now
+            else:
+                # Format beklenildiği gibi değilse uyarı ver
+                print(f"[!] Hata: Beklenmedik veri formatı. Temizlenmiş veri: '{cleaned_data}'")
+        
+    except (ValueError, SyntaxError, IndexError) as e:
+        # Ayrıştırma hatası oluşursa, hem orijinal hem de temizlenmiş veriyi göster
+        print(f"[!] Veri ayrıştırma hatası: {e} | Orijinal Data: '{line}' | Temizlenmiş Data: '{cleaned_data}'")
+
 
 # --- Bluetooth okuma thread'i ---
 def bluetooth_reader():
@@ -79,11 +100,8 @@ def bluetooth_reader():
             if available:
                 chunk = bt_serial.read(available)
                 text = chunk.decode('utf-8', errors='ignore')
-                # Yalnızca izinli karakterleri tut (parazit önleme)
-                text = re.sub(r'[^0-9\n\r\t\.\,()\-\+\s]', '', text)
                 bt_buffer += text
-
-            # Satır bazlı ayırma (tamamlanmamış son parça bt_buffer'da kalır)
+                
             if '\n' in bt_buffer:
                 lines = bt_buffer.split('\n')
                 bt_buffer = lines[-1]
@@ -93,14 +111,12 @@ def bluetooth_reader():
                         continue
                     process_and_print_position_data(s)
         except serial.SerialException:
-            # Geçici hata → tamponu temizle ve devam et
             bt_buffer = ''
             try:
                 bt_serial.reset_input_buffer()
             except Exception:
                 pass
         except Exception:
-            # Diğer hatalar sessiz geçilsin (veri akışını kesmeyelim)
             pass
         time.sleep(BT_READ_SLEEP)
 
@@ -129,7 +145,6 @@ def joystick_control():
     next_ts = time.time()
 
     while True:
-        start = time.time()
         pygame.event.pump()
 
         # Throttle
@@ -168,7 +183,7 @@ def joystick_control():
 if __name__ == '__main__':
     setup_arduino()
     setup_bluetooth()
-    print("Basladi: Motor kontrol (thread) + OptiTrack okuma (thread)")
+    print("Başlatıldı: Motor kontrol (thread) + OptiTrack okuma (thread)")
 
     t_bt = threading.Thread(target=bluetooth_reader, daemon=True)
     t_js = threading.Thread(target=joystick_control, daemon=True)
